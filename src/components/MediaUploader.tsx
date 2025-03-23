@@ -18,7 +18,8 @@ import {
   X, 
   FileAudio, 
   Clock, 
-  CheckCircle 
+  CheckCircle,
+  Bot
 } from 'lucide-react';
 import useSupabase from '@/hooks/useSupabase';
 import { 
@@ -32,6 +33,7 @@ import Link from 'next/link';
 import { Label } from './ui/label';
 import { Progress } from './ui/progress';
 import { Badge } from './ui/badge';
+import TranscriptChat from './TranscriptChat';
 
 export default function MediaUploader({ onComplete }: { onComplete?: (transcription: TranscriptionRecord) => void }) {
   const { supabase, user } = useSupabase();
@@ -894,6 +896,34 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
     );
   };
 
+  const renderChatAssistant = () => {
+    if (!transcriptionRecord?.transcriptionText) return null;
+    
+    // Ensure we have a complete transcription record with proper ID formatting
+    const formattedRecord = {
+      ...transcriptionRecord,
+      id: String(transcriptionRecord.id), // Ensure ID is a string
+      fileName: transcriptionRecord.fileName || 'Interview', // Provide fallback
+      transcriptionText: transcriptionRecord.transcriptionText || '', // Ensure text exists
+    };
+    
+    // More detailed debug for the chat component
+    console.log('MediaUploader: Passing transcription record to chat:', {
+      id: formattedRecord.id,
+      type: typeof formattedRecord.id,
+      idAsString: String(formattedRecord.id),
+      fileName: formattedRecord.fileName,
+      hasText: !!formattedRecord.transcriptionText?.length,
+      textLength: formattedRecord.transcriptionText?.length
+    });
+    
+    return (
+      <TranscriptChat 
+        transcriptionRecord={formattedRecord}
+      />
+    );
+  };
+
   const getSentimentColor = (sentiment: string): string => {
     switch (sentiment.toLowerCase()) {
       case 'positive':
@@ -906,32 +936,6 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
         return 'bg-purple-500';
       default:
         return 'bg-gray-500';
-    }
-  };
-
-  const refreshTranscriptionRecord = async () => {
-    if (!transcriptionRecord?.id) return;
-    
-    try {
-      const { data, error } = await supabase
-        .from('transcriptions')
-        .select('*')
-        .eq('id', transcriptionRecord.id)
-        .single();
-      
-      if (error) throw error;
-      
-      if (data) {
-        const mappedRecord = mapDbRecordToTranscriptionRecord(data);
-        setTranscriptionRecord(mappedRecord);
-        
-        // If completion callback is provided, call it with the updated record
-        if (onComplete && mappedRecord.status === 'completed') {
-          onComplete(mappedRecord);
-        }
-      }
-    } catch (error) {
-      console.error('Error refreshing transcription record:', error);
     }
   };
 
@@ -966,55 +970,58 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
 
   useEffect(() => {
     if (currentTranscriptionId) {
-      console.log('Polling for transcription updates with ID:', currentTranscriptionId);
-      
-      const fetchTranscriptionStatus = async () => {
-        try {
-          const { data, error } = await supabase
-            .from('transcriptions')
-            .select('*')
-            .eq('id', currentTranscriptionId)
-            .single();
-            
-          if (error) {
-            console.error('Error fetching transcription status:', error);
-            return;
-          }
-          
-          if (data) {
-            console.log('Fetched transcription data:', {
-              id: data.id,
-              status: data.status,
-              summary_status: data.summary_status,
-              analysis_status: data.analysis_status,
-              has_summary: !!data.summary_text,
-              has_analysis: !!data.analysis_data
-            });
-            
-            // Map the database record to our interface format
-            const mappedRecord = mapDbRecordToTranscriptionRecord(data);
-            console.log('Mapped record:', {
-              id: mappedRecord.id,
-              summaryStatus: mappedRecord.summaryStatus,
-              analysisStatus: mappedRecord.analysisStatus,
-              hasSummary: !!mappedRecord.summaryText,
-              hasAnalysis: !!mappedRecord.analysisData
-            });
-            
-            setTranscriptionRecord(mappedRecord);
-          }
-        } catch (err) {
-          console.error('Error in polling:', err);
+      checkTranscriptionStatus();
+    }
+    
+    async function checkTranscriptionStatus() {
+      try {
+        if (!currentTranscriptionId) return;
+        
+        console.log('Checking transcription status for ID:', currentTranscriptionId);
+        
+        // Get the current session to retrieve the access token
+        const { data: { session } } = await supabase.auth.getSession();
+        
+        if (!session || !session.access_token) {
+          console.error('No valid session found when checking transcription status');
+          return;
         }
-      };
-      
-      // Initial fetch
-      fetchTranscriptionStatus();
-      
-      // Set up polling
-      const intervalId = setInterval(fetchTranscriptionStatus, 5000);
-      
-      return () => clearInterval(intervalId);
+        
+        // Query the database for the latest status
+        const { data: record, error } = await supabase
+          .from('transcriptions')
+          .select('*')
+          .eq('id', currentTranscriptionId)
+          .single();
+          
+        if (error) {
+          console.error('Error fetching transcription:', error.message);
+          return;
+        }
+        
+        if (!record) {
+          console.log('No transcription record found with ID:', currentTranscriptionId);
+          return;
+        }
+        
+        // Map the database record to our frontend format
+        const mappedRecord = mapDbRecordToTranscriptionRecord(record);
+        console.log('Updated transcription record:', {
+          id: mappedRecord.id,
+          status: mappedRecord.status,
+          hasText: !!mappedRecord.transcriptionText
+        });
+        
+        // Update state with the latest transcription data
+        setTranscriptionRecord(mappedRecord);
+        
+        // If still processing, check again in a few seconds
+        if (record.status === 'processing') {
+          setTimeout(checkTranscriptionStatus, 5000);
+        }
+      } catch (err) {
+        console.error('Error checking transcription status:', err);
+      }
     }
   }, [currentTranscriptionId, supabase]);
 
@@ -1030,12 +1037,9 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
     };
   }, []);
 
-  return (
-    <div className="container mx-auto px-4 py-6 max-w-4xl">
-      <h1 className="text-3xl font-bold mb-6">InsightAI - Customer Interview Analysis</h1>
-      
-      {/* Status banner */}
-      {transcriptionRecord && (
+  const renderStatusBanner = () => {
+    if (transcriptionRecord) {
+      return (
         <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-md">
           <div className="flex items-center text-green-700">
             <Check className="w-5 h-5 mr-2" />
@@ -1046,7 +1050,15 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
             </span>
           </div>
         </div>
-      )}
+      );
+    }
+    
+    return null;
+  };
+
+  return (
+    <div className="container mx-auto px-4 py-6 max-w-4xl">
+      <h1 className="text-3xl font-bold mb-6">InsightAI - Customer Interview Analysis</h1>
       
       {/* Always visible file upload section */}
       <div className="space-y-4 mb-6 p-6 border border-gray-200 rounded-md bg-white shadow-sm">
@@ -1111,8 +1123,35 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
         )}
       </div>
       
+      {/* Status banner */}
+      {transcriptionRecord && (
+        <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-md">
+          <div className="flex items-center text-green-700">
+            <Check className="w-5 h-5 mr-2" />
+            <span>
+              <span className="font-medium">{transcriptionRecord.fileName}:</span> {' '}
+              Transcription complete. {transcriptionRecord.summaryText ? 'Summary generated.' : ''} {transcriptionRecord.analysisData ? 'Analysis complete.' : ''}
+            </span>
+          </div>
+        </div>
+      )}
+      
       {/* Tabs section */}
       {transcriptionRecord && renderTranscriptionContent()}
+      
+      {/* Chat Assistant Section - as a separate prominent section */}
+      {transcriptionRecord?.transcriptionText && (
+        <div className="mb-6 p-6 border border-blue-200 rounded-md bg-white shadow-md">
+          <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
+            <Bot className="h-5 w-5 text-blue-500" />
+            Interview Chat Assistant
+          </h2>
+          <p className="text-gray-600 mb-4">
+            Ask questions about this interview to get deeper insights. For example: "What were the main pain points?" or "Summarize the feature requests."
+          </p>
+          <TranscriptChat transcriptionRecord={transcriptionRecord} />
+        </div>
+      )}
     </div>
   );
 }
