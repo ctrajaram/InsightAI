@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import Navbar from "@/components/ui/navbar";
-import MediaUploader from '@/components/MediaUploader';
+import { MediaUploader } from '@/components/MediaUploader';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
 import { TranscriptionRecord } from '@/lib/media-storage';
 import useSupabase from '@/hooks/useSupabase';

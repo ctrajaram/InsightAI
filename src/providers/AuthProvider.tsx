@@ -48,7 +48,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       
       if (event === 'SIGNED_OUT') {
         router.push('/');
-      } else if (event === 'SIGNED_IN' && PUBLIC_ROUTES.includes(pathname)) {
+      } else if (event === 'SIGNED_IN' && PUBLIC_ROUTES.includes(pathname) && pathname !== '/') {
         router.push('/dashboard');
       }
     });

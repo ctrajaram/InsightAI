@@ -19,7 +19,18 @@ import {
   FileAudio, 
   Clock, 
   CheckCircle,
-  Bot
+  Bot,
+  LogIn,
+  Info,
+  FileCheck,
+  ListTodo,
+  BarChart,
+  BarChart2,
+  FileQuestion,
+  Heart,
+  Badge,
+  AlertOctagon,
+  Lightbulb
 } from 'lucide-react';
 import useSupabase from '@/hooks/useSupabase';
 import { 
@@ -32,10 +43,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import Link from 'next/link';
 import { Label } from './ui/label';
 import { Progress } from './ui/progress';
-import { Badge } from './ui/badge';
-import TranscriptChat from './TranscriptChat';
+import { TranscriptChat } from './TranscriptChat';
 
-export default function MediaUploader({ onComplete }: { onComplete?: (transcription: TranscriptionRecord) => void }) {
+export function MediaUploader({ onComplete }: { onComplete?: (transcription: TranscriptionRecord) => void }) {
   const { supabase, user } = useSupabase();
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -518,13 +528,6 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
         throw new Error('Invalid transcription ID. Please try uploading again.');
       }
       
-      // Validate UUID format
-      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-      if (!uuidRegex.test(finalTranscriptionId.trim())) {
-        console.error('Invalid UUID format for transcription ID:', finalTranscriptionId);
-        throw new Error('Invalid transcription ID format. Please try uploading again.');
-      }
-      
       setIsAnalyzing(true);
       setAnalysisStatus('processing');
       
@@ -692,219 +695,257 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
     }
   };
 
-  const renderSentimentBadge = (sentiment: string) => {
-    switch (sentiment) {
-      case 'positive':
-        return <Badge variant="positive">Positive</Badge>;
-      case 'negative':
-        return <Badge variant="negative">Negative</Badge>;
-      case 'neutral':
-      default:
-        return <Badge variant="neutral">Neutral</Badge>;
-    }
-  };
-
-  const renderFileInfo = () => {
-    if (!selectedFile) return null;
+  const renderStatusBanner = () => {
+    let statusMessage = '';
+    let icon = null;
+    let bgColor = '';
+    let textColor = '';
+    let borderColor = '';
     
-    const isAudio = selectedFile.type.startsWith('audio/');
-    const isVideo = selectedFile.type.startsWith('video/');
-    const icon = isAudio ? <AudioWaveform size={24} /> : isVideo ? <Video size={24} /> : null;
-    const sizeMB = (selectedFile.size / (1024 * 1024)).toFixed(2);
+    if (isAnalyzing) {
+      statusMessage = 'Analyzing the interview content...';
+      icon = <Sparkles className="w-5 h-5 mr-2" />;
+      bgColor = 'bg-amber-50';
+      textColor = 'text-amber-700';
+      borderColor = 'border-amber-200';
+    } else if (isSummarizing) {
+      statusMessage = 'Generating summary...';
+      icon = <FileText className="w-5 h-5 mr-2" />;
+      bgColor = 'bg-blue-50';
+      textColor = 'text-blue-700';
+      borderColor = 'border-blue-200';
+    } else if (transcriptionRecord?.summaryText && transcriptionRecord?.analysisData) {
+      statusMessage = `${transcriptionRecord.fileName}: Transcription, summary and analysis complete.`;
+      icon = <CheckCircle className="w-5 h-5 mr-2" />;
+      bgColor = 'bg-green-50';
+      textColor = 'text-green-700';
+      borderColor = 'border-green-200';
+    } else if (transcriptionRecord?.summaryText) {
+      statusMessage = `${transcriptionRecord.fileName}: Transcription and summary complete.`;
+      icon = <CheckCircle className="w-5 h-5 mr-2" />;
+      bgColor = 'bg-green-50';
+      textColor = 'text-green-700';
+      borderColor = 'border-green-200';
+    } else {
+      statusMessage = `${transcriptionRecord?.fileName}: Transcription complete.`;
+      icon = <CheckCircle className="w-5 h-5 mr-2" />;
+      bgColor = 'bg-green-50';
+      textColor = 'text-green-700';
+      borderColor = 'border-green-200';
+    }
     
     return (
-      <div className="flex items-center gap-3 p-3 bg-muted/50 rounded-md">
-        {icon}
-        <div className="flex-1 min-w-0">
-          <p className="font-medium text-sm truncate">{selectedFile.name}</p>
-          <p className="text-xs text-muted-foreground">{sizeMB} MB</p>
+      <div className={`mb-6 p-4 rounded-lg border ${bgColor} ${borderColor} shadow-sm`}>
+        <div className={`flex items-center ${textColor}`}>
+          {icon}
+          <span className="font-medium">{statusMessage}</span>
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => setSelectedFile(null)}
-          disabled={isUploading || isTranscribing}
-        >
-          Change
-        </Button>
       </div>
     );
   };
-
-  const renderStatus = () => {
-    if (error) {
-      return (
-        <div className="flex items-center gap-2 text-red-500 p-3 bg-red-50 rounded-md">
-          <AlertTriangle className="h-5 w-5 mr-2" />
-          <p className="text-sm">{error}</p>
-        </div>
-      );
-    }
-    
-    if (isTranscribing) {
-      return (
-        <div className="flex items-center gap-2 text-blue-500 p-3 bg-blue-50 rounded-md">
-          <Loader2 size={18} className="animate-spin" />
-          <p className="text-sm">Transcribing your file. This may take a few minutes...</p>
-        </div>
-      );
-    }
-
-    if (isSummarizing) {
-      return (
-        <div className="flex items-center gap-2 text-purple-500 p-3 bg-purple-50 rounded-md">
-          <Loader2 size={18} className="animate-spin" />
-          <p className="text-sm">Generating AI summary of your transcription...</p>
-        </div>
-      );
-    }
-    
-    if (isAnalyzing) {
-      return (
-        <div className="flex items-center gap-2 text-amber-500 p-3 bg-amber-50 rounded-md">
-          <Loader2 size={18} className="animate-spin" />
-          <p className="text-sm">Analyzing transcript for insights...</p>
-        </div>
-      );
-    }
-    
-    if (transcriptionRecord?.status === 'completed') {
-      return (
-        <div className="flex items-center gap-2 text-green-500 p-3 bg-green-50 rounded-md">
-          <Check size={18} />
-          <p className="text-sm">
-            Transcription complete! 
-            {transcriptionRecord.summaryStatus === 'completed' && ' Summary generated.'}
-            {transcriptionRecord.analysisStatus === 'completed' && ' Analysis complete.'}
-          </p>
-        </div>
-      );
-    }
-    
-    return null;
-  };
-
+  
   const renderTranscriptionContent = () => {
-    if (!transcriptionRecord?.transcriptionText) return null;
-
     return (
-      <div className="mt-4">
-        <Tabs defaultValue="summary" className="w-full">
-          <TabsList className="grid w-full grid-cols-2">
-            <TabsTrigger value="summary">
-              <div className="flex items-center gap-2">
-                <Sparkles size={16} />
-                <span>AI Summary</span>
-              </div>
-            </TabsTrigger>
-            <TabsTrigger value="sentiment">
-              <div className="flex items-center gap-2">
-                <TrendingUp size={16} />
-                <span>Sentiment Analysis</span>
-              </div>
-            </TabsTrigger>
-          </TabsList>
-          
-          <TabsContent value="summary" className="mt-2">
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-lg flex items-center gap-2">
-                  <Sparkles className="h-5 w-5 text-purple-500" />
-                  AI-Generated Summary for {transcriptionRecord.fileName}
-                </CardTitle>
-                <CardDescription>Key insights from the audio recording</CardDescription>
-              </CardHeader>
-              <CardContent>
-                {transcriptionRecord.summaryText ? (
-                  <div className="p-4 bg-purple-50 rounded-md whitespace-pre-wrap prose max-w-none">
+      <div className="mb-8 rounded-xl bg-white border border-gray-200 shadow-sm overflow-hidden">
+        <div className="p-6 sm:p-8 bg-gray-50 border-b border-gray-200">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-semibold text-gray-800">Interview Results</h2>
+            <div className="flex items-center text-sm text-gray-500">
+              <Clock className="h-4 w-4 mr-1" />
+              <span>
+                {transcriptionRecord?.createdAt 
+                  ? new Date(transcriptionRecord.createdAt).toLocaleString() 
+                  : 'Recently processed'}
+              </span>
+            </div>
+          </div>
+          <Tabs defaultValue="transcription" className="w-full">
+            <TabsList className="grid w-full grid-cols-3 mb-4 bg-gray-100">
+              <TabsTrigger value="transcription" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
+                <FileText className="h-4 w-4 mr-2" />
+                Transcription
+              </TabsTrigger>
+              <TabsTrigger 
+                value="summary" 
+                disabled={!transcriptionRecord?.summaryText}
+                className="data-[state=active]:bg-white data-[state=active]:shadow-sm"
+              >
+                <ListTodo className="h-4 w-4 mr-2" />
+                Summary
+              </TabsTrigger>
+              <TabsTrigger 
+                value="analysis" 
+                disabled={!transcriptionRecord?.analysisData}
+                className="data-[state=active]:bg-white data-[state=active]:shadow-sm"
+              >
+                <BarChart className="h-4 w-4 mr-2" />
+                Analysis
+              </TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="transcription" className="pt-4">
+              {!transcriptionRecord?.transcriptionText ? (
+                <div className="p-6 text-center text-gray-500">
+                  <FileQuestion className="h-12 w-12 text-gray-400" />
+                  <p>No transcription available</p>
+                </div>
+              ) : (
+                <div className="bg-white rounded-md p-4 max-h-96 overflow-y-auto border border-gray-100">
+                  <pre className="whitespace-pre-wrap font-sans text-gray-800">
+                    {transcriptionRecord.transcriptionText}
+                  </pre>
+                </div>
+              )}
+              
+              {transcriptionRecord && !transcriptionRecord.summaryText && (
+                <div className="mt-4 flex justify-end">
+                  <Button 
+                    onClick={() => generateSummaryForTranscription(transcriptionRecord.id, transcriptionRecord.transcriptionText)}
+                    disabled={isSummarizing}
+                    className="flex items-center bg-indigo-600 hover:bg-indigo-700"
+                  >
+                    {isSummarizing ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Generating...
+                      </>
+                    ) : (
+                      <>
+                        <FileText className="mr-2 h-4 w-4" />
+                        Generate Summary
+                      </>
+                    )}
+                  </Button>
+                </div>
+              )}
+            </TabsContent>
+
+            <TabsContent value="summary" className="pt-4">
+              {!transcriptionRecord?.summaryText ? (
+                <div className="p-6 text-center text-gray-500">
+                  <FileQuestion className="h-12 w-12 text-gray-400" />
+                  <p>No summary available yet</p>
+                </div>
+              ) : (
+                <div className="bg-white rounded-md p-4 max-h-96 overflow-y-auto border border-gray-100">
+                  <div className="prose max-w-none text-gray-800">
                     {transcriptionRecord.summaryText}
                   </div>
-                ) : transcriptionRecord.summaryStatus === 'processing' ? (
-                  <div className="flex items-center gap-2 p-4 bg-purple-50 rounded-md">
-                    <Loader2 className="h-5 w-5 animate-spin text-purple-500" />
-                    <p className="text-sm">Generating summary...</p>
-                  </div>
-                ) : (
-                  <div className="p-4 bg-gray-50 rounded-md">
-                    <p className="text-sm text-gray-500">No summary available yet. Processing will begin automatically.</p>
-                  </div>
-                )}
-              </CardContent>
-              <CardFooter className="pt-0 text-xs text-muted-foreground">
-                <p>The summary is generated automatically using AI and may not capture all details.</p>
-              </CardFooter>
-            </Card>
-          </TabsContent>
-          
-          <TabsContent value="sentiment" className="mt-2">
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-lg flex items-center gap-2">
-                  <TrendingUp className="h-5 w-5 text-amber-500" />
-                  Sentiment Analysis for {transcriptionRecord.fileName}
-                </CardTitle>
-                <CardDescription>Customer sentiment insights from the interview</CardDescription>
-              </CardHeader>
-              <CardContent>
-                {transcriptionRecord.analysisData ? (
-                  <div>
-                    <div className="flex items-center justify-between mb-4">
-                      <h3 className="text-sm font-medium">Overall Sentiment:</h3>
-                      <div className={`px-3 py-1 rounded-full text-white text-xs font-medium ${getSentimentColor(transcriptionRecord.analysisData.sentiment)}`}>
-                        {transcriptionRecord.analysisData.sentiment.charAt(0).toUpperCase() + transcriptionRecord.analysisData.sentiment.slice(1)}
-                      </div>
+                </div>
+              )}
+            </TabsContent>
+
+            <TabsContent value="analysis" className="pt-4">
+              {transcriptionRecord?.analysisData ? (
+                <div className="space-y-6">
+                  <div className="bg-white rounded-md p-6 border border-gray-100 space-y-4">
+                    <div className="flex items-center mb-2">
+                      <Heart className="h-5 w-5 mr-2 text-rose-500" />
+                      <h3 className="text-lg font-medium">Customer Sentiment</h3>
                     </div>
                     
-                    <div className="mb-6 p-4 bg-yellow-50 rounded-md">
-                      <h3 className="text-sm font-medium mb-2">Sentiment Explanation:</h3>
-                      <p className="text-sm">{transcriptionRecord.analysisData.sentiment_explanation}</p>
+                    {/* Display sentiment with improved type safety */}
+                    <div className="flex flex-col gap-2">
+                      {/* Debug info to see the actual raw sentiment value */}
+                      <div className="text-xs text-gray-500 mb-1">
+                        Raw sentiment data: {JSON.stringify(transcriptionRecord?.analysisData || {})}
+                      </div>
+                      
+                      {(() => {
+                        // Using IIFE for better type handling
+                        const sentimentData = transcriptionRecord?.analysisData?.sentiment;
+                        
+                        if (!sentimentData) {
+                          return <span className="text-gray-500">No sentiment data available</span>;
+                        }
+                        
+                        const sentimentString = String(sentimentData).toLowerCase();
+                        
+                        let bgColorClass = 'bg-gray-100 text-gray-800';
+                        if (sentimentString.includes('positive')) {
+                          bgColorClass = 'bg-green-100 text-green-800';
+                        } else if (sentimentString.includes('neutral')) {
+                          bgColorClass = 'bg-blue-100 text-blue-800';
+                        } else if (sentimentString.includes('negative')) {
+                          bgColorClass = 'bg-red-100 text-red-800';
+                        }
+                        
+                        return (
+                          <Badge className={`text-sm py-1 px-3 rounded-full ${bgColorClass}`}>
+                            {String(sentimentData)}
+                          </Badge>
+                        );
+                      })()}
                     </div>
                     
-                    {transcriptionRecord.analysisData.pain_points && transcriptionRecord.analysisData.pain_points.length > 0 && (
-                      <div className="mb-6">
-                        <h3 className="text-sm font-medium mb-2">Pain Points:</h3>
-                        <ul className="space-y-2">
-                          {transcriptionRecord.analysisData.pain_points.map((point, index) => (
-                            <li key={index} className="bg-gray-50 p-3 rounded-md">
-                              <p className="text-sm font-medium">{point.issue}</p>
-                              <p className="text-sm mt-1">{point.description}</p>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                    
-                    {transcriptionRecord.analysisData.feature_requests && transcriptionRecord.analysisData.feature_requests.length > 0 && (
-                      <div>
-                        <h3 className="text-sm font-medium mb-2">Feature Requests:</h3>
-                        <ul className="space-y-2">
-                          {transcriptionRecord.analysisData.feature_requests.map((feature, index) => (
-                            <li key={index} className="bg-gray-50 p-3 rounded-md">
-                              <p className="text-sm font-medium">{feature.feature}</p>
-                              <p className="text-sm mt-1">{feature.description}</p>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
+                    {transcriptionRecord?.analysisData?.sentiment_explanation && (
+                      <p className="text-gray-700 mt-2">{transcriptionRecord.analysisData.sentiment_explanation}</p>
                     )}
                   </div>
-                ) : transcriptionRecord.analysisStatus === 'processing' ? (
-                  <div className="flex items-center gap-2 p-4 bg-amber-50 rounded-md">
-                    <Loader2 className="h-5 w-5 animate-spin text-amber-500" />
-                    <p className="text-sm">Analyzing sentiment...</p>
+
+                  <div className="bg-white rounded-md p-6 border border-gray-100 space-y-4">
+                    <div className="flex items-center mb-2">
+                      <AlertOctagon className="h-5 w-5 mr-2 text-amber-500" />
+                      <h3 className="text-lg font-medium">Pain Points</h3>
+                    </div>
+                    <ul className="space-y-2">
+                      {transcriptionRecord.analysisData.pain_points && transcriptionRecord.analysisData.pain_points.map((point: { issue: string; description: string }, index: number) => (
+                        <li key={index} className="flex items-start">
+                          <div className="h-5 w-5 rounded-full bg-amber-100 text-amber-800 flex items-center justify-center mr-2 flex-shrink-0 mt-0.5">
+                            {index + 1}
+                          </div>
+                          <p className="text-gray-700">{point.issue}: {point.description}</p>
+                        </li>
+                      ))}
+                    </ul>
                   </div>
-                ) : (
-                  <div className="p-4 bg-gray-50 rounded-md">
-                    <p className="text-sm text-gray-500">No sentiment analysis available yet. Processing will begin automatically.</p>
+
+                  <div className="bg-white rounded-md p-6 border border-gray-100 space-y-4">
+                    <div className="flex items-center mb-2">
+                      <Lightbulb className="h-5 w-5 mr-2 text-indigo-500" />
+                      <h3 className="text-lg font-medium">Feature Requests</h3>
+                    </div>
+                    <ul className="space-y-2">
+                      {transcriptionRecord.analysisData.feature_requests && transcriptionRecord.analysisData.feature_requests.map((feature: { feature: string; description: string }, index: number) => (
+                        <li key={index} className="flex items-start">
+                          <div className="h-5 w-5 rounded-full bg-indigo-100 text-indigo-800 flex items-center justify-center mr-2 flex-shrink-0 mt-0.5">
+                            {index + 1}
+                          </div>
+                          <p className="text-gray-700">{feature.feature}: {feature.description}</p>
+                        </li>
+                      ))}
+                    </ul>
                   </div>
-                )}
-              </CardContent>
-              <CardFooter className="pt-0 text-xs text-muted-foreground">
-                <p>Sentiment analysis is powered by AI and reflects the emotional tone detected in the interview.</p>
-              </CardFooter>
-            </Card>
-          </TabsContent>
-        </Tabs>
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center p-8 bg-white rounded-md border border-gray-100">
+                  <AlertCircle className="h-12 w-12 text-amber-500 mb-4" />
+                  <h3 className="text-lg font-medium text-gray-900 mb-2">Analysis Data Not Available</h3>
+                  <p className="text-gray-600 text-center max-w-md mb-4">
+                    The analysis data is missing or hasn't been generated yet. Try clicking the "Analyze" button to generate insights for this transcription.
+                  </p>
+                  <Button 
+                    onClick={() => transcriptionRecord && requestAnalysis(transcriptionRecord.id)}
+                    disabled={isAnalyzing || !transcriptionRecord}
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white"
+                  >
+                    {isAnalyzing ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Analyzing...
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="h-4 w-4 mr-2" />
+                        Analyze Transcription
+                      </>
+                    )}
+                  </Button>
+                </div>
+              )}
+            </TabsContent>
+          </Tabs>
+        </div>
       </div>
     );
   };
@@ -935,21 +976,6 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
         transcriptionRecord={formattedRecord}
       />
     );
-  };
-
-  const getSentimentColor = (sentiment: string): string => {
-    switch (sentiment.toLowerCase()) {
-      case 'positive':
-        return 'bg-green-500';
-      case 'neutral':
-        return 'bg-blue-500';
-      case 'negative':
-        return 'bg-red-500';
-      case 'mixed':
-        return 'bg-purple-500';
-      default:
-        return 'bg-gray-500';
-    }
   };
 
   useEffect(() => {
@@ -1084,139 +1110,185 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
     };
   }, []);
 
-  const renderStatusBanner = () => {
-    if (transcriptionRecord) {
-      return (
-        <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-md">
-          <div className="flex items-center text-green-700">
-            <Check className="w-5 h-5 mr-2" />
-            <span>
-              <strong>{transcriptionRecord.fileName}</strong>: Transcription complete! 
-              {transcriptionRecord.summaryStatus === 'completed' && ' Summary generated.'}
-              {transcriptionRecord.analysisStatus === 'completed' && ' Analysis complete.'}
-            </span>
-          </div>
-        </div>
-      );
-    }
-    
-    return null;
-  };
-
   return (
     <div className="container mx-auto px-4 py-6 max-w-4xl">
-      <h1 className="text-3xl font-bold mb-6">InsightAI - Customer Interview Analysis</h1>
+      <h1 className="text-3xl font-bold mb-6 bg-gradient-to-r from-indigo-500 to-purple-600 bg-clip-text text-transparent">InsightAI - Customer Interview Analysis</h1>
       
       {showAuthPrompt ? (
-        <Card className="mb-6">
-          <CardHeader>
-            <CardTitle>Authentication Required</CardTitle>
-            <CardDescription>Please sign in to use the InsightAI platform</CardDescription>
+        <Card className="mb-6 border border-gray-200 shadow-md overflow-hidden">
+          <CardHeader className="bg-gradient-to-r from-indigo-50 to-purple-50 pb-6">
+            <CardTitle className="text-2xl text-gray-800">Authentication Required</CardTitle>
+            <CardDescription className="text-gray-600">Please sign in to use the InsightAI platform</CardDescription>
           </CardHeader>
-          <CardContent>
-            <p className="mb-4">You need to be signed in to upload and analyze interviews.</p>
+          <CardContent className="pt-6">
+            <div className="flex items-center mb-4 p-4 bg-blue-50 rounded-md border border-blue-100 text-blue-700">
+              <div className="mr-3 flex-shrink-0">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
+                  <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a.75.75 0 000 1.5h.253a.25.25 0 01.244.304l-.459 2.066A1.75 1.75 0 0010.747 15H11a.75.75 0 000-1.5h-.253a.25.25 0 01-.244-.304l.459-2.066A1.75 1.75 0 009.253 9H9z" clipRule="evenodd" />
+                </svg>
+              </div>
+              <p>You need to be signed in to upload and analyze interviews.</p>
+            </div>
           </CardContent>
-          <CardFooter>
+          <CardFooter className="flex justify-end bg-gray-50 border-t border-gray-100">
             <Button 
               onClick={() => window.location.href = '/auth?returnUrl=/transcribe'}
-              className="mr-2"
+              className="bg-indigo-600 hover:bg-indigo-700 transition-all duration-200"
             >
+              <LogIn className="mr-2 h-4 w-4" />
               Sign In
             </Button>
           </CardFooter>
         </Card>
       ) : (
         <>
-          {/* Always visible file upload section */}
-          <div className="space-y-4 mb-6 p-6 border border-gray-200 rounded-md bg-white shadow-sm">
-            <div className="flex flex-col space-y-2">
-              <label 
-                htmlFor="file-input" 
-                className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
-              >
-                Upload audio or video file
-              </label>
-              <div className="flex flex-col space-y-2">
-                <input
-                  id="file-input"
-                  type="file"
-                  accept="audio/*,video/*"
-                  disabled={isSubmitting}
-                  onChange={handleFilesSelected}
-                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-                />
-                <p className="text-sm text-gray-500">
-                  MP3 files up to 25MB
-                </p>
-              </div>
+          {/* Status banner */}
+          {transcriptionRecord && renderStatusBanner()}
+          
+          {/* File upload section with modern design */}
+          <div className="mb-8 rounded-xl bg-white border border-gray-200 shadow-sm overflow-hidden">
+            <div className="p-6 sm:p-8 bg-gradient-to-r from-indigo-50 to-purple-50 border-b border-gray-200">
+              <h2 className="text-xl font-semibold mb-2 text-gray-800">Upload Interview</h2>
+              <p className="text-gray-600">Upload audio or video files to transcribe and analyze customer interviews</p>
             </div>
             
-            <div className="flex justify-end">
-              <button 
-                type="button" 
-                disabled={isSubmitting || !selectedFile} 
-                onClick={handleSubmit}
-                className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground shadow hover:bg-primary/90 h-9 px-4 py-2"
-              >
-                <div>
-                  {isSubmitting ? (
-                    <div className="flex items-center">
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      <div>Processing...</div>
+            <div className="p-6 sm:p-8 space-y-6">
+              <div className="flex flex-col space-y-3">
+                <label 
+                  htmlFor="file-input" 
+                  className="text-sm font-medium text-gray-700"
+                >
+                  Select audio or video file
+                </label>
+                <div className="flex flex-col space-y-2">
+                  <div className="relative">
+                    <input
+                      id="file-input"
+                      type="file"
+                      accept="audio/*,video/*"
+                      disabled={isSubmitting}
+                      onChange={handleFilesSelected}
+                      className="w-full rounded-lg border-2 border-dashed border-gray-300 py-8 px-4 text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-indigo-50 file:text-indigo-600 hover:file:bg-indigo-100 focus:outline-none cursor-pointer disabled:opacity-70 disabled:cursor-not-allowed"
+                    />
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-[-1]">
+                      <FileAudio className="h-12 w-12 text-gray-300" />
                     </div>
-                  ) : (
+                  </div>
+                  
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-3 text-sm text-gray-500 bg-gray-50 p-3 rounded-lg">
                     <div className="flex items-center">
-                      <Upload className="mr-2 h-4 w-4" />
-                      <div>Upload & Analyze</div>
+                      <Info className="w-4 h-4 mr-2 text-indigo-500" />
+                      <span>Supported formats:</span>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <span className="px-2 py-1 bg-gray-200 rounded text-xs">MP3</span>
+                      <span className="px-2 py-1 bg-gray-200 rounded text-xs">MP4</span>
+                      <span className="px-2 py-1 bg-gray-200 rounded text-xs">WAV</span>
+                      <span className="px-2 py-1 bg-gray-200 rounded text-xs">M4A</span>
+                    </div>
+                    <span className="text-xs">Max size: 25MB</span>
+                  </div>
+                  
+                  {selectedFile && (
+                    <div className="flex items-center p-3 bg-blue-50 border border-blue-100 rounded-lg text-blue-800">
+                      <FileCheck className="h-5 w-5 text-blue-600 mr-2" />
+                      <div className="flex-1 truncate">
+                        <span className="font-medium">{selectedFile.name}</span>
+                        <span className="ml-2 text-xs">({(selectedFile.size / (1024 * 1024)).toFixed(2)} MB)</span>
+                      </div>
+                      <Button 
+                        variant="ghost" 
+                        size="sm" 
+                        onClick={() => setSelectedFile(null)}
+                        className="ml-2 text-gray-500 hover:text-red-500"
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
                     </div>
                   )}
                 </div>
-              </button>
-            </div>
-            
-            {uploadProgress > 0 && (
-              <div className="w-full mt-4">
-                <div className="flex justify-between text-xs mb-1">
-                  <span>Uploading...</span>
-                  <span>{uploadProgress.toFixed(0)}%</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-2">
-                  <div 
-                    className="bg-blue-600 h-2 rounded-full" 
-                    style={{ width: `${uploadProgress}%` }}
-                  ></div>
-                </div>
               </div>
-            )}
+              
+              <div className="flex justify-end mt-4">
+                <Button 
+                  type="button" 
+                  disabled={isSubmitting || !selectedFile} 
+                  onClick={handleSubmit}
+                  className="bg-indigo-600 hover:bg-indigo-700 transition-colors w-full sm:w-auto flex items-center justify-center gap-2"
+                >
+                  {isSubmitting ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Processing...
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="h-4 w-4" />
+                      Upload & Analyze
+                    </>
+                  )}
+                </Button>
+              </div>
+              
+              {uploadProgress > 0 && (
+                <div className="w-full mt-4">
+                  <div className="flex justify-between text-xs mb-1">
+                    <span>Uploading...</span>
+                    <span>{uploadProgress.toFixed(0)}%</span>
+                  </div>
+                  <div className="w-full bg-gray-200 rounded-full h-2.5 overflow-hidden">
+                    <div 
+                      className="bg-indigo-600 h-2.5 rounded-full transition-all duration-300" 
+                      style={{ width: `${uploadProgress}%` }}
+                    ></div>
+                  </div>
+                </div>
+              )}
+              
+              {error && (
+                <div className="w-full p-4 bg-red-50 border border-red-200 rounded-lg text-red-800 mt-4">
+                  <div className="flex items-center">
+                    <AlertTriangle className="h-5 w-5 text-red-500 mr-2" />
+                    <p>{error}</p>
+                  </div>
+                </div>
+              )}
+              
+              {isTranscribing && (
+                <div className="w-full flex flex-col items-center justify-center space-y-3 py-6">
+                  <div className="relative">
+                    <div className="h-16 w-16 rounded-full border-t-4 border-b-4 border-indigo-500 animate-spin"></div>
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <FileText className="h-6 w-6 text-indigo-600" />
+                    </div>
+                  </div>
+                  <div className="text-center">
+                    <p className="font-medium text-gray-800">Transcribing your file...</p>
+                    <p className="text-sm text-gray-500 mt-1">This may take a few minutes depending on the file size</p>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
           
-          {/* Status banner */}
-          {transcriptionRecord && (
-            <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-md">
-              <div className="flex items-center text-green-700">
-                <Check className="w-5 h-5 mr-2" />
-                <span>
-                  <span className="font-medium">{transcriptionRecord.fileName}:</span> {' '}
-                  Transcription complete. {transcriptionRecord.summaryText ? 'Summary generated.' : ''} {transcriptionRecord.analysisData ? 'Analysis complete.' : ''}
-                </span>
-              </div>
-            </div>
-          )}
-          
-          {/* Tabs section */}
+          {/* Transcription content in a nicely designed container */}
           {transcriptionRecord && renderTranscriptionContent()}
           
-          {/* Chat Assistant Section - as a separate prominent section */}
+          {/* Chat Assistant Section with improved styling */}
           {transcriptionRecord?.transcriptionText && (
-            <div className="mb-6 p-6 border border-blue-200 rounded-md bg-white shadow-md">
-              <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
-                <Bot className="h-5 w-5 text-blue-500" />
-                Interview Chat Assistant
-              </h2>
-              <p className="text-gray-600 mb-4">
-                Ask questions about this interview to get deeper insights. For example: "What were the main pain points?" or "Summarize the feature requests."
-              </p>
-              <TranscriptChat transcriptionRecord={transcriptionRecord} />
+            <div className="mb-6 rounded-xl border border-indigo-200 bg-white shadow-md overflow-hidden">
+              <div className="p-6 sm:p-8 bg-gradient-to-r from-indigo-50 to-indigo-100 border-b border-indigo-200">
+                <h2 className="text-xl font-semibold mb-2 flex items-center gap-2 text-gray-800">
+                  <Bot className="h-5 w-5 text-indigo-600" />
+                  Interview Chat Assistant
+                </h2>
+                <p className="text-gray-600">
+                  Ask questions about the interview to get deeper insights. For example: "What were the main pain points?" or "Summarize the feature requests."
+                </p>
+              </div>
+              <div className="p-0">
+                <TranscriptChat transcriptionRecord={transcriptionRecord} />
+              </div>
             </div>
           )}
         </>
