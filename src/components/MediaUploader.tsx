@@ -47,6 +47,7 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
   const [analysisStatus, setAnalysisStatus] = useState<'pending' | 'processing' | 'completed' | 'error'>('pending');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [currentTranscriptionId, setCurrentTranscriptionId] = useState<string | null>(null);
+  const [updateMessage, setUpdateMessage] = useState<string>('');
 
   const handleFilesSelected = (event: React.ChangeEvent<HTMLInputElement> | File[]) => {
     // Handle both direct file array and input change event
@@ -72,6 +73,11 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
       type: files[0].type,
       size: files[0].size
     });
+    
+    // Reset the transcription record when a new file is selected
+    setTranscriptionRecord(null);
+    setCurrentTranscriptionId(null);
+    setUploadProgress(0);
     
     setSelectedFile(files[0]);
     setError(null);
@@ -787,56 +793,15 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
               <CardHeader className="pb-2">
                 <CardTitle className="text-lg flex items-center gap-2">
                   <Sparkles className="h-5 w-5 text-purple-500" />
-                  AI-Generated Summary
+                  AI-Generated Summary for {transcriptionRecord.fileName}
                 </CardTitle>
-                <CardDescription>Upload an audio file to generate a summary</CardDescription>
+                <CardDescription>Key insights from the audio recording</CardDescription>
               </CardHeader>
               <CardContent>
-                {!transcriptionRecord?.transcriptionText ? (
-                  <div className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-gray-200 rounded-md">
-                    <div className="flex flex-col items-center gap-2 p-4">
-                      <Upload className="h-8 w-8 text-gray-400" />
-                      <label 
-                        htmlFor="summary-file-input" 
-                        className="text-sm font-medium cursor-pointer hover:text-primary"
-                      >
-                        Upload audio or video file
-                      </label>
-                      <input
-                        id="summary-file-input"
-                        type="file"
-                        accept="audio/*,video/*"
-                        onChange={handleFilesSelected}
-                        className="hidden"
-                      />
-                      <p className="text-xs text-gray-500">Drag and drop or click to browse</p>
-                    </div>
+                {transcriptionRecord.summaryText ? (
+                  <div className="p-4 bg-purple-50 rounded-md whitespace-pre-wrap prose max-w-none">
+                    {transcriptionRecord.summaryText}
                   </div>
-                ) : transcriptionRecord.summaryText ? (
-                  <>
-                    <div className="p-4 bg-purple-50 rounded-md whitespace-pre-wrap prose max-w-none">
-                      {transcriptionRecord.summaryText}
-                    </div>
-                    <div className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-gray-200 rounded-md mt-4">
-                      <div className="flex flex-col items-center gap-2 p-4">
-                        <Upload className="h-8 w-8 text-gray-400" />
-                        <label 
-                          htmlFor="summary-file-input" 
-                          className="text-sm font-medium cursor-pointer hover:text-primary"
-                        >
-                          Upload new audio or video file
-                        </label>
-                        <input
-                          id="summary-file-input"
-                          type="file"
-                          accept="audio/*,video/*"
-                          onChange={handleFilesSelected}
-                          className="hidden"
-                        />
-                        <p className="text-xs text-gray-500">Drag and drop or click to browse</p>
-                      </div>
-                    </div>
-                  </>
                 ) : transcriptionRecord.summaryStatus === 'processing' ? (
                   <div className="flex items-center gap-2 p-4 bg-purple-50 rounded-md">
                     <Loader2 className="h-5 w-5 animate-spin text-purple-500" />
@@ -845,15 +810,13 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
                 ) : (
                   <div className="p-4 bg-gray-50 rounded-md">
                     <p className="text-sm text-gray-500">No summary available yet.</p>
-                    <div className="mt-4 p-2 bg-gray-100 rounded text-xs overflow-auto">
-                      <p>Debug - Transcription Record Status:</p>
-                      <pre>
-                        Summary Status: {transcriptionRecord.summaryStatus || 'undefined'}{'\n'}
-                        Analysis Status: {transcriptionRecord.analysisStatus || 'undefined'}{'\n'}
-                        Has Summary Text: {transcriptionRecord.summaryText ? 'Yes' : 'No'}{'\n'}
-                        Has Analysis Data: {transcriptionRecord.analysisData ? 'Yes' : 'No'}
-                      </pre>
-                    </div>
+                    <button 
+                      onClick={handleSummarize}
+                      className="mt-4 bg-primary text-white px-3 py-2 rounded-md text-sm flex items-center gap-2"
+                    >
+                      <Sparkles className="h-4 w-4" />
+                      <span>Generate Summary</span>
+                    </button>
                   </div>
                 )}
               </CardContent>
@@ -868,71 +831,52 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
               <CardHeader className="pb-2">
                 <CardTitle className="text-lg flex items-center gap-2">
                   <TrendingUp className="h-5 w-5 text-amber-500" />
-                  Customer Sentiment Analysis
+                  Sentiment Analysis for {transcriptionRecord.fileName}
                 </CardTitle>
-                <CardDescription>Upload an audio file to analyze customer sentiment</CardDescription>
+                <CardDescription>Customer sentiment insights from the interview</CardDescription>
               </CardHeader>
               <CardContent>
-                {!transcriptionRecord?.transcriptionText ? (
-                  <div className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-gray-200 rounded-md">
-                    <div className="flex flex-col items-center gap-2 p-4">
-                      <Upload className="h-8 w-8 text-gray-400" />
-                      <label 
-                        htmlFor="sentiment-file-input" 
-                        className="text-sm font-medium cursor-pointer hover:text-primary"
-                      >
-                        Upload audio or video file
-                      </label>
-                      <input
-                        id="sentiment-file-input"
-                        type="file"
-                        accept="audio/*,video/*"
-                        onChange={handleFilesSelected}
-                        className="hidden"
-                      />
-                      <p className="text-xs text-gray-500">Drag and drop or click to browse</p>
-                    </div>
-                  </div>
-                ) : transcriptionRecord.analysisData ? (
+                {transcriptionRecord.analysisData ? (
                   <div>
                     <div className="flex items-center justify-between mb-4">
-                      <p className="text-sm font-medium">Overall Sentiment:</p>
-                      {renderSentimentBadge(transcriptionRecord.analysisData.sentiment)}
-                    </div>
-                    
-                    <div className="p-4 bg-amber-50 rounded-md mb-4">
-                      <p className="text-sm font-medium mb-2">Sentiment Explanation:</p>
-                      <p className="text-sm">
-                        {transcriptionRecord.analysisData.sentiment_explanation || 
-                         "No sentiment explanation available. The analysis may be incomplete."}
-                      </p>
-                    </div>
-                    
-                    {/* Debug information - can be removed in production */}
-                    <div className="mt-4 p-2 bg-gray-100 rounded text-xs overflow-auto">
-                      <p>Debug - Analysis Data Structure:</p>
-                      <pre>{JSON.stringify(transcriptionRecord.analysisData, null, 2)}</pre>
-                    </div>
-                    
-                    <div className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-gray-200 rounded-md mt-4">
-                      <div className="flex flex-col items-center gap-2 p-4">
-                        <Upload className="h-8 w-8 text-gray-400" />
-                        <label 
-                          htmlFor="sentiment-new-file-input" 
-                          className="text-sm font-medium cursor-pointer hover:text-primary"
-                        >
-                          Upload new audio or video file
-                        </label>
-                        <input
-                          id="sentiment-new-file-input"
-                          type="file"
-                          accept="audio/*,video/*"
-                          onChange={handleFilesSelected}
-                          className="hidden"
-                        />
-                        <p className="text-xs text-gray-500">Drag and drop or click to browse</p>
+                      <h3 className="text-sm font-medium">Overall Sentiment:</h3>
+                      <div className={`px-3 py-1 rounded-full text-white text-xs font-medium ${getSentimentColor(transcriptionRecord.analysisData.sentiment)}`}>
+                        {transcriptionRecord.analysisData.sentiment.charAt(0).toUpperCase() + transcriptionRecord.analysisData.sentiment.slice(1)}
                       </div>
                     </div>
+                    
+                    <div className="mb-6 p-4 bg-yellow-50 rounded-md">
+                      <h3 className="text-sm font-medium mb-2">Sentiment Explanation:</h3>
+                      <p className="text-sm">{transcriptionRecord.analysisData.sentiment_explanation}</p>
+                    </div>
+                    
+                    {transcriptionRecord.analysisData.pain_points && transcriptionRecord.analysisData.pain_points.length > 0 && (
+                      <div className="mb-6">
+                        <h3 className="text-sm font-medium mb-2">Pain Points:</h3>
+                        <ul className="space-y-2">
+                          {transcriptionRecord.analysisData.pain_points.map((point, index) => (
+                            <li key={index} className="bg-gray-50 p-3 rounded-md">
+                              <p className="text-sm font-medium">{point.issue}</p>
+                              <p className="text-sm mt-1">{point.description}</p>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    
+                    {transcriptionRecord.analysisData.feature_requests && transcriptionRecord.analysisData.feature_requests.length > 0 && (
+                      <div>
+                        <h3 className="text-sm font-medium mb-2">Feature Requests:</h3>
+                        <ul className="space-y-2">
+                          {transcriptionRecord.analysisData.feature_requests.map((feature, index) => (
+                            <li key={index} className="bg-gray-50 p-3 rounded-md">
+                              <p className="text-sm font-medium">{feature.feature}</p>
+                              <p className="text-sm mt-1">{feature.description}</p>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                   </div>
                 ) : transcriptionRecord.analysisStatus === 'processing' ? (
                   <div className="flex items-center gap-2 p-4 bg-amber-50 rounded-md">
@@ -942,17 +886,139 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
                 ) : (
                   <div className="p-4 bg-gray-50 rounded-md">
                     <p className="text-sm text-gray-500">No sentiment analysis available yet.</p>
+                    <button 
+                      onClick={handleAnalyze}
+                      className="mt-4 bg-primary text-white px-3 py-2 rounded-md text-sm flex items-center gap-2"
+                    >
+                      <LineChart className="h-4 w-4" />
+                      <span>Analyze Sentiment</span>
+                    </button>
                   </div>
                 )}
               </CardContent>
               <CardFooter className="pt-0 text-xs text-muted-foreground">
-                <p>Sentiment analysis is performed using OpenAI GPT-4 and may not be 100% accurate.</p>
+                <p>Sentiment analysis is powered by AI and reflects the emotional tone detected in the interview.</p>
               </CardFooter>
             </Card>
           </TabsContent>
         </Tabs>
       </div>
     );
+  };
+
+  const handleSummarize = async () => {
+    if (!transcriptionRecord?.id) return;
+    
+    try {
+      setUpdateMessage('Starting summarization...');
+      
+      // Get the session for authentication
+      const session = await supabase.auth.getSession();
+      if (!session?.data?.session?.access_token) {
+        setUpdateMessage('Authentication required. Please log in.');
+        return;
+      }
+      
+      // Call the summarize API route with the transcription record ID
+      const response = await fetch('/api/summarize', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.data.session.access_token}`
+        },
+        body: JSON.stringify({ transcriptionId: transcriptionRecord.id })
+      });
+      
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`Failed to summarize: ${error}`);
+      }
+      
+      // Refresh the transcription record
+      await refreshTranscriptionRecord();
+      setUpdateMessage('Summary generated successfully!');
+    } catch (error) {
+      console.error('Error summarizing transcription:', error);
+      setUpdateMessage(`Error: ${error instanceof Error ? error.message : 'Failed to summarize'}`);
+    }
+  };
+
+  const handleAnalyze = async () => {
+    if (!transcriptionRecord?.id) return;
+    
+    try {
+      setUpdateMessage('Starting sentiment analysis...');
+      
+      // Get the session for authentication
+      const session = await supabase.auth.getSession();
+      if (!session?.data?.session?.access_token) {
+        setUpdateMessage('Authentication required. Please log in.');
+        return;
+      }
+      
+      // Call the analyze API route with the transcription record ID
+      const response = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.data.session.access_token}`
+        },
+        body: JSON.stringify({ transcriptionId: transcriptionRecord.id })
+      });
+      
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`Failed to analyze: ${error}`);
+      }
+      
+      // Refresh the transcription record
+      await refreshTranscriptionRecord();
+      setUpdateMessage('Sentiment analysis completed successfully!');
+    } catch (error) {
+      console.error('Error analyzing transcription:', error);
+      setUpdateMessage(`Error: ${error instanceof Error ? error.message : 'Failed to analyze'}`);
+    }
+  };
+
+  const getSentimentColor = (sentiment: string): string => {
+    switch (sentiment.toLowerCase()) {
+      case 'positive':
+        return 'bg-green-500';
+      case 'neutral':
+        return 'bg-blue-500';
+      case 'negative':
+        return 'bg-red-500';
+      case 'mixed':
+        return 'bg-purple-500';
+      default:
+        return 'bg-gray-500';
+    }
+  };
+
+  const refreshTranscriptionRecord = async () => {
+    if (!transcriptionRecord?.id) return;
+    
+    try {
+      const { data, error } = await supabase
+        .from('transcriptions')
+        .select('*')
+        .eq('id', transcriptionRecord.id)
+        .single();
+      
+      if (error) throw error;
+      
+      if (data) {
+        const mappedRecord = mapDbRecordToTranscriptionRecord(data);
+        setTranscriptionRecord(mappedRecord);
+        
+        // If completion callback is provided, call it with the updated record
+        if (onComplete && mappedRecord.status === 'completed') {
+          onComplete(mappedRecord);
+        }
+      }
+    } catch (error) {
+      console.error('Error refreshing transcription record:', error);
+    }
   };
 
   // Cleanup function for component unmount
@@ -1022,77 +1088,88 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
   }, [currentTranscriptionId, supabase]);
 
   return (
-    <div className="w-full max-w-3xl mx-auto">
-      <h2 className="text-2xl font-bold mb-4">InsightAI - Customer Interview Analysis</h2>
+    <div className="container mx-auto px-4 py-6 max-w-4xl">
+      <h1 className="text-3xl font-bold mb-6">InsightAI - Customer Interview Analysis</h1>
       
-      {!transcriptionRecord ? (
-        <div className="space-y-4">
-          <div className="flex flex-col space-y-2">
-            <label 
-              htmlFor="file-input" 
-              className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
-            >
-              Upload audio or video file
-            </label>
-            <div className="flex flex-col space-y-2">
-              <input
-                id="file-input"
-                type="file"
-                accept="audio/*,video/*"
-                disabled={isSubmitting}
-                onChange={handleFilesSelected}
-                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-              />
-              <p className="text-sm text-gray-500">
-                MP3 files up to 25MB
-              </p>
-            </div>
+      {/* Status banner */}
+      {transcriptionRecord && (
+        <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-md">
+          <div className="flex items-center text-green-700">
+            <Check className="w-5 h-5 mr-2" />
+            <span>
+              <strong>{transcriptionRecord.fileName}</strong>: Transcription complete! 
+              {transcriptionRecord.summaryStatus === 'completed' && ' Summary generated.'}
+              {transcriptionRecord.analysisStatus === 'completed' && ' Analysis complete.'}
+            </span>
           </div>
-          
-          <div className="flex justify-end">
-            <button 
-              type="button" 
-              disabled={isSubmitting} 
-              onClick={handleSubmit}
-              className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground shadow hover:bg-primary/90 h-9 px-4 py-2"
-            >
-              <div>
-                {isSubmitting ? (
-                  <div className="flex items-center">
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    <div>Processing...</div>
-                  </div>
-                ) : (
-                  <div className="flex items-center">
-                    <Upload className="mr-2 h-4 w-4" />
-                    <div>Upload & Analyze</div>
-                  </div>
-                )}
-              </div>
-            </button>
-          </div>
-          
-          {uploadProgress > 0 && (
-            <div className="w-full mt-4">
-              <div className="flex justify-between text-xs mb-1">
-                <span>Uploading...</span>
-                <span>{uploadProgress.toFixed(0)}%</span>
-              </div>
-              <div className="w-full bg-gray-200 rounded-full h-2">
-                <div 
-                  className="bg-blue-600 h-2 rounded-full" 
-                  style={{ width: `${uploadProgress}%` }}
-                ></div>
-              </div>
-            </div>
-          )}
         </div>
-      ) : (
-        <>
-          {renderStatus()}
-          {renderTranscriptionContent()}
-        </>
       )}
+      
+      {/* Always visible file upload section */}
+      <div className="space-y-4 mb-6 p-6 border border-gray-200 rounded-md bg-white shadow-sm">
+        <div className="flex flex-col space-y-2">
+          <label 
+            htmlFor="file-input" 
+            className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+          >
+            Upload audio or video file
+          </label>
+          <div className="flex flex-col space-y-2">
+            <input
+              id="file-input"
+              type="file"
+              accept="audio/*,video/*"
+              disabled={isSubmitting}
+              onChange={handleFilesSelected}
+              className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+            />
+            <p className="text-sm text-gray-500">
+              MP3 files up to 25MB
+            </p>
+          </div>
+        </div>
+        
+        <div className="flex justify-end">
+          <button 
+            type="button" 
+            disabled={isSubmitting || !selectedFile} 
+            onClick={handleSubmit}
+            className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground shadow hover:bg-primary/90 h-9 px-4 py-2"
+          >
+            <div>
+              {isSubmitting ? (
+                <div className="flex items-center">
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  <div>Processing...</div>
+                </div>
+              ) : (
+                <div className="flex items-center">
+                  <Upload className="mr-2 h-4 w-4" />
+                  <div>Upload & Analyze</div>
+                </div>
+              )}
+            </div>
+          </button>
+        </div>
+        
+        {uploadProgress > 0 && (
+          <div className="w-full mt-4">
+            <div className="flex justify-between text-xs mb-1">
+              <span>Uploading...</span>
+              <span>{uploadProgress.toFixed(0)}%</span>
+            </div>
+            <div className="w-full bg-gray-200 rounded-full h-2">
+              <div 
+                className="bg-blue-600 h-2 rounded-full" 
+                style={{ width: `${uploadProgress}%` }}
+              ></div>
+            </div>
+          </div>
+        )}
+      </div>
+      
+      {/* Tabs section */}
+      {transcriptionRecord && renderTranscriptionContent()}
     </div>
   );
 }
