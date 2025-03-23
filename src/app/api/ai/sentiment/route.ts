@@ -1,6 +1,5 @@
-import { StreamingTextResponse } from 'ai';
+import { NextRequest, NextResponse } from 'next/server';
 import openai from '@/lib/openai';
-import { NextRequest } from 'next/server';
 
 export const runtime = 'edge';
 
@@ -9,28 +8,26 @@ export async function POST(req: NextRequest) {
     const { text } = await req.json();
 
     if (!text) {
-      return new Response('Text is required', { status: 400 });
+      return NextResponse.json({ error: 'Text is required' }, { status: 400 });
     }
 
+    // Generate sentiment analysis response with OpenAI API - non-streaming for compatibility
     const response = await openai.chat.completions.create({
-      model: 'gpt-4',
-      stream: true,
+      model: 'gpt-4o',
       messages: [
-        {
-          role: 'system',
-          content: 'You are a sentiment analysis assistant. Analyze the sentiment of the given text and categorize it as positive, negative, or neutral. Provide a brief explanation for your analysis.'
-        },
-        {
-          role: 'user',
-          content: text
-        }
+        { role: 'system', content: 'You are a sentiment analysis expert. Analyze the sentiment of the text and provide a detailed response.' },
+        { role: 'user', content: `Analyze the sentiment of the following text: ${text}` }
       ],
+      stream: false,
+      temperature: 0.6,
+      max_tokens: 500,
     });
     
-    // Return a StreamingTextResponse, which will stream the response
-    return new StreamingTextResponse(response.body);
+    // Return a regular JSON response instead of streaming
+    const content = response.choices[0]?.message?.content || '';
+    return NextResponse.json({ result: content });
   } catch (error) {
     console.error('Error analyzing sentiment:', error);
-    return new Response('Error processing your request', { status: 500 });
+    return NextResponse.json({ error: 'Error processing your request' }, { status: 500 });
   }
-} 
+}
