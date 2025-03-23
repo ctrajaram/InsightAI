@@ -589,6 +589,27 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
       const data = await response.json();
       console.log('Analysis generated successfully:', data);
       
+      // Save the analysis data to Supabase
+      if (data.analysis) {
+        console.log('Saving analysis data to Supabase...');
+        
+        const { error: updateError } = await supabase
+          .from('transcriptions')
+          .update({
+            analysis_status: 'completed',
+            analysis_data: data.analysis,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', existingRecord.id);
+          
+        if (updateError) {
+          console.error('Error saving analysis data to Supabase:', updateError);
+          // Continue anyway since we have the data in memory
+        } else {
+          console.log('Analysis data saved to Supabase successfully');
+        }
+      }
+      
       // Update the transcription record with the analysis data
       // Map from snake_case database fields to camelCase for the UI
       if (transcriptionRecord) {
