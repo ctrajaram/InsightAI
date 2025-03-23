@@ -197,6 +197,15 @@ ${finalTranscriptionText}
     try {
       analysisData = JSON.parse(analysisText);
       console.log('Successfully parsed analysis data:', analysisData);
+      
+      // Validate the structure of the analysis data
+      if (!analysisData.sentiment_explanation) {
+        console.warn('Warning: sentiment_explanation field is missing from the analysis data');
+        // Add a default explanation if missing
+        analysisData.sentiment_explanation = "No sentiment explanation provided by the AI.";
+      } else {
+        console.log('Sentiment explanation found:', analysisData.sentiment_explanation);
+      }
     } catch (parseError) {
       console.error('Error parsing OpenAI response as JSON:', parseError);
       console.log('Raw response:', analysisText);
