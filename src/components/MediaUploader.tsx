@@ -341,6 +341,8 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
   };
 
   const generateSummaryForTranscription = async (transcriptionId: string, transcriptionText: string) => {
+    if (!transcriptionId || !transcriptionText) return;
+    
     try {
       setIsSummarizing(true);
       setTranscriptionRecord(prev => {
@@ -809,14 +811,7 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
                   </div>
                 ) : (
                   <div className="p-4 bg-gray-50 rounded-md">
-                    <p className="text-sm text-gray-500">No summary available yet.</p>
-                    <button 
-                      onClick={handleSummarize}
-                      className="mt-4 bg-primary text-white px-3 py-2 rounded-md text-sm flex items-center gap-2"
-                    >
-                      <Sparkles className="h-4 w-4" />
-                      <span>Generate Summary</span>
-                    </button>
+                    <p className="text-sm text-gray-500">No summary available yet. Processing will begin automatically.</p>
                   </div>
                 )}
               </CardContent>
@@ -885,14 +880,7 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
                   </div>
                 ) : (
                   <div className="p-4 bg-gray-50 rounded-md">
-                    <p className="text-sm text-gray-500">No sentiment analysis available yet.</p>
-                    <button 
-                      onClick={handleAnalyze}
-                      className="mt-4 bg-primary text-white px-3 py-2 rounded-md text-sm flex items-center gap-2"
-                    >
-                      <LineChart className="h-4 w-4" />
-                      <span>Analyze Sentiment</span>
-                    </button>
+                    <p className="text-sm text-gray-500">No sentiment analysis available yet. Processing will begin automatically.</p>
                   </div>
                 )}
               </CardContent>
@@ -904,80 +892,6 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
         </Tabs>
       </div>
     );
-  };
-
-  const handleSummarize = async () => {
-    if (!transcriptionRecord?.id) return;
-    
-    try {
-      setUpdateMessage('Starting summarization...');
-      
-      // Get the session for authentication
-      const session = await supabase.auth.getSession();
-      if (!session?.data?.session?.access_token) {
-        setUpdateMessage('Authentication required. Please log in.');
-        return;
-      }
-      
-      // Call the summarize API route with the transcription record ID
-      const response = await fetch('/api/summarize', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.data.session.access_token}`
-        },
-        body: JSON.stringify({ transcriptionId: transcriptionRecord.id })
-      });
-      
-      if (!response.ok) {
-        const error = await response.text();
-        throw new Error(`Failed to summarize: ${error}`);
-      }
-      
-      // Refresh the transcription record
-      await refreshTranscriptionRecord();
-      setUpdateMessage('Summary generated successfully!');
-    } catch (error) {
-      console.error('Error summarizing transcription:', error);
-      setUpdateMessage(`Error: ${error instanceof Error ? error.message : 'Failed to summarize'}`);
-    }
-  };
-
-  const handleAnalyze = async () => {
-    if (!transcriptionRecord?.id) return;
-    
-    try {
-      setUpdateMessage('Starting sentiment analysis...');
-      
-      // Get the session for authentication
-      const session = await supabase.auth.getSession();
-      if (!session?.data?.session?.access_token) {
-        setUpdateMessage('Authentication required. Please log in.');
-        return;
-      }
-      
-      // Call the analyze API route with the transcription record ID
-      const response = await fetch('/api/analyze', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.data.session.access_token}`
-        },
-        body: JSON.stringify({ transcriptionId: transcriptionRecord.id })
-      });
-      
-      if (!response.ok) {
-        const error = await response.text();
-        throw new Error(`Failed to analyze: ${error}`);
-      }
-      
-      // Refresh the transcription record
-      await refreshTranscriptionRecord();
-      setUpdateMessage('Sentiment analysis completed successfully!');
-    } catch (error) {
-      console.error('Error analyzing transcription:', error);
-      setUpdateMessage(`Error: ${error instanceof Error ? error.message : 'Failed to analyze'}`);
-    }
   };
 
   const getSentimentColor = (sentiment: string): string => {
@@ -1021,17 +935,34 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
     }
   };
 
-  // Cleanup function for component unmount
   useEffect(() => {
-    // Return cleanup function to handle component unmounting
-    return () => {
-      // Cancel any in-progress operations if component unmounts
-      setIsUploading(false);
-      setIsTranscribing(false);
-      setIsSummarizing(false);
-      setIsAnalyzing(false);
+    const autoProcessTranscription = async () => {
+      // If we have a transcription but no summary or analysis, generate them automatically
+      if (transcriptionRecord?.transcriptionText && transcriptionRecord?.id) {
+        // Auto-generate summary if it's not already generated or in progress
+        if (transcriptionRecord.summaryStatus !== 'completed' && 
+            transcriptionRecord.summaryStatus !== 'processing') {
+          try {
+            await generateSummaryForTranscription(transcriptionRecord.id, transcriptionRecord.transcriptionText);
+          } catch (error) {
+            console.error('Auto-summary generation failed:', error);
+          }
+        }
+        
+        // Auto-analyze sentiment if it's not already analyzed or in progress
+        if (transcriptionRecord.analysisStatus !== 'completed' && 
+            transcriptionRecord.analysisStatus !== 'processing') {
+          try {
+            await requestAnalysis(transcriptionRecord.id);
+          } catch (error) {
+            console.error('Auto-sentiment analysis failed:', error);
+          }
+        }
+      }
     };
-  }, []);
+    
+    autoProcessTranscription();
+  }, [transcriptionRecord?.id, transcriptionRecord?.transcriptionText, generateSummaryForTranscription, requestAnalysis]);
 
   useEffect(() => {
     if (currentTranscriptionId) {
@@ -1086,6 +1017,18 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
       return () => clearInterval(intervalId);
     }
   }, [currentTranscriptionId, supabase]);
+
+  // Cleanup function for component unmount
+  useEffect(() => {
+    // Return cleanup function to handle component unmounting
+    return () => {
+      // Cancel any in-progress operations if component unmounts
+      setIsUploading(false);
+      setIsTranscribing(false);
+      setIsSummarizing(false);
+      setIsAnalyzing(false);
+    };
+  }, []);
 
   return (
     <div className="container mx-auto px-4 py-6 max-w-4xl">
