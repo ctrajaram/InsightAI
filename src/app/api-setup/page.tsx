@@ -2,7 +2,7 @@
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import { Navbar } from "@/components/ui/navbar";
+import Navbar from "@/components/ui/navbar";
 import { Input } from "@/components/ui/input";
 import { useState } from "react";
 
