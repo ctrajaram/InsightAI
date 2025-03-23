@@ -49,7 +49,6 @@ export default function Navbar() {
     { href: '/', label: 'Home', icon: <Home className="h-4 w-4 mr-2" /> },
     { href: '/dashboard', label: 'Dashboard', icon: <BarChart2 className="h-4 w-4 mr-2" /> },
     { href: '/transcribe', label: 'Transcribe', icon: <FileText className="h-4 w-4 mr-2" /> },
-    { href: '/analyze', label: 'Analysis', icon: <MessageSquare className="h-4 w-4 mr-2" /> },
   ];
 
   return (
@@ -89,7 +88,7 @@ export default function Navbar() {
         </button>
 
         {/* Authentication section */}
-        <div className="hidden md:flex items-center gap-4">
+        <div className="hidden md:flex items-center gap-2">
           {loading ? (
             <Button disabled variant="outline" size="sm">
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -146,12 +145,20 @@ export default function Navbar() {
               </AnimatePresence>
             </div>
           ) : (
-            <Button asChild size="sm" variant="default" className="bg-indigo-600 hover:bg-indigo-700">
-              <Link href="/login" className="flex items-center gap-2">
-                <LogIn className="h-4 w-4" />
-                Sign In
-              </Link>
-            </Button>
+            <>
+              <Button asChild size="sm" variant="outline" className="border-indigo-600 text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50">
+                <Link href="/signup" className="flex items-center gap-1">
+                  <User className="h-4 w-4" />
+                  Sign Up
+                </Link>
+              </Button>
+              <Button asChild size="sm" variant="default" className="bg-indigo-600 hover:bg-indigo-700">
+                <Link href="/login" className="flex items-center gap-1">
+                  <LogIn className="h-4 w-4" />
+                  Sign In
+                </Link>
+              </Button>
+            </>
           )}
         </div>
       </div>
@@ -217,12 +224,20 @@ export default function Navbar() {
                   </Button>
                 </div>
               ) : (
-                <Button asChild size="sm" variant="default" className="w-full bg-indigo-600 hover:bg-indigo-700">
-                  <Link href="/login" className="flex items-center justify-center">
-                    <LogIn className="mr-2 h-4 w-4" />
-                    Sign In
-                  </Link>
-                </Button>
+                <div className="space-y-2">
+                  <Button asChild size="sm" variant="outline" className="w-full border-indigo-600 text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50">
+                    <Link href="/signup" className="flex items-center justify-center">
+                      <User className="mr-2 h-4 w-4" />
+                      Sign Up
+                    </Link>
+                  </Button>
+                  <Button asChild size="sm" variant="default" className="w-full bg-indigo-600 hover:bg-indigo-700">
+                    <Link href="/login" className="flex items-center justify-center">
+                      <LogIn className="mr-2 h-4 w-4" />
+                      Sign In
+                    </Link>
+                  </Button>
+                </div>
               )}
             </div>
           </motion.div>
