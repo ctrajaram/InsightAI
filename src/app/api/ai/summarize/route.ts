@@ -1,6 +1,5 @@
-import { StreamingTextResponse } from 'ai';
+import { NextRequest, NextResponse } from 'next/server';
 import openai from '@/lib/openai';
-import { NextRequest } from 'next/server';
 
 export const runtime = 'edge';
 
@@ -9,28 +8,26 @@ export async function POST(req: NextRequest) {
     const { text } = await req.json();
 
     if (!text) {
-      return new Response('Text is required', { status: 400 });
+      return NextResponse.json({ error: 'Text is required' }, { status: 400 });
     }
 
+    // Generate summarization response with OpenAI API - non-streaming for compatibility
     const response = await openai.chat.completions.create({
-      model: 'gpt-4',
-      stream: true,
+      model: 'gpt-4o',
       messages: [
-        {
-          role: 'system',
-          content: 'You are a helpful assistant that summarizes text. Provide a concise summary of the text provided.'
-        },
-        {
-          role: 'user',
-          content: text
-        }
+        { role: 'system', content: 'You are a summarization expert. Provide a concise summary of the text.' },
+        { role: 'user', content: `Summarize the following text: ${text}` }
       ],
+      stream: false,
+      temperature: 0.5,
+      max_tokens: 500,
     });
     
-    // Return a StreamingTextResponse, which will stream the response
-    return new StreamingTextResponse(response.body);
+    // Return a regular JSON response instead of streaming
+    const content = response.choices[0]?.message?.content || '';
+    return NextResponse.json({ result: content });
   } catch (error) {
-    console.error('Error summarizing text:', error);
-    return new Response('Error processing your request', { status: 500 });
+    console.error('Error generating summary:', error);
+    return NextResponse.json({ error: 'Error processing your request' }, { status: 500 });
   }
-} 
+}

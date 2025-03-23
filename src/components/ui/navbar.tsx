@@ -7,7 +7,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Loader2, LogIn, LogOut, User, Menu, X, Home, BarChart2, FileText, MessageSquare } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
-export default function Navbar() {
+export function Navbar() {
   const { user, loading, supabase } = useSupabase();
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
@@ -246,3 +246,5 @@ export default function Navbar() {
     </header>
   );
 }
+
+export default Navbar;
