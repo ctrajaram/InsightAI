@@ -50,6 +50,7 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [currentTranscriptionId, setCurrentTranscriptionId] = useState<string | null>(null);
   const [updateMessage, setUpdateMessage] = useState<string>('');
+  const [showAuthPrompt, setShowAuthPrompt] = useState(false);
 
   const handleFilesSelected = (event: React.ChangeEvent<HTMLInputElement> | File[]) => {
     // Handle both direct file array and input change event
@@ -343,9 +344,14 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
   };
 
   const generateSummaryForTranscription = async (transcriptionId: string, transcriptionText: string) => {
-    if (!transcriptionId || !transcriptionText) return;
-    
     try {
+      // Check authentication first
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        console.log('Authentication required for summary generation - user is not logged in');
+        return; // Exit early without error if not authenticated
+      }
+      
       setIsSummarizing(true);
       setTranscriptionRecord(prev => {
         if (!prev) return prev;
@@ -494,6 +500,13 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
 
   const requestAnalysis = async (transcriptionId: string) => {
     try {
+      // Check authentication first
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        console.log('Authentication required for analysis - user is not logged in');
+        return; // Exit early without error if not authenticated
+      }
+      
       console.log('Starting analysis with transcription ID:', transcriptionId);
       console.log('Using stored transcription ID:', currentTranscriptionId);
       
@@ -941,9 +954,15 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
 
   useEffect(() => {
     const autoProcessTranscription = async () => {
-      // If we have a transcription but no summary or analysis, generate them automatically
-      if (transcriptionRecord?.transcriptionText && transcriptionRecord?.id) {
-        // Auto-generate summary if it's not already generated or in progress
+      if (transcriptionRecord?.id && transcriptionRecord?.transcriptionText) {
+        // Check authentication first
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) {
+          console.log('Authentication required for auto-processing - user is not logged in');
+          return; // Exit early without error if not authenticated
+        }
+        
+        // Auto-generate summary if it's not already summarized or in progress
         if (transcriptionRecord.summaryStatus !== 'completed' && 
             transcriptionRecord.summaryStatus !== 'processing') {
           try {
@@ -966,7 +985,7 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
     };
     
     autoProcessTranscription();
-  }, [transcriptionRecord?.id, transcriptionRecord?.transcriptionText, generateSummaryForTranscription, requestAnalysis]);
+  }, [transcriptionRecord?.id, transcriptionRecord?.transcriptionText, generateSummaryForTranscription, requestAnalysis, supabase]);
 
   useEffect(() => {
     if (currentTranscriptionId) {
@@ -977,15 +996,14 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
       try {
         if (!currentTranscriptionId) return;
         
-        console.log('Checking transcription status for ID:', currentTranscriptionId);
-        
-        // Get the current session to retrieve the access token
+        // Check authentication first
         const { data: { session } } = await supabase.auth.getSession();
-        
-        if (!session || !session.access_token) {
-          console.error('No valid session found when checking transcription status');
-          return;
+        if (!session) {
+          console.log('Authentication required for checking transcription status - user is not logged in');
+          return; // Exit early without error if not authenticated
         }
+        
+        console.log('Checking transcription status for ID:', currentTranscriptionId);
         
         // Query the database for the latest status
         const { data: record, error } = await supabase
@@ -1025,6 +1043,35 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
     }
   }, [currentTranscriptionId, supabase]);
 
+  useEffect(() => {
+    const checkAuth = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        setShowAuthPrompt(true);
+      } else {
+        setShowAuthPrompt(false);
+      }
+    };
+
+    checkAuth();
+
+    // Listen for auth state changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'SIGNED_OUT') {
+        setShowAuthPrompt(true);
+        // Clear any sensitive data when user signs out
+        setTranscriptionRecord(null);
+        setSelectedFile(null);
+      } else if (event === 'SIGNED_IN') {
+        setShowAuthPrompt(false);
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [supabase]);
+
   // Cleanup function for component unmount
   useEffect(() => {
     // Return cleanup function to handle component unmounting
@@ -1060,97 +1107,119 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
     <div className="container mx-auto px-4 py-6 max-w-4xl">
       <h1 className="text-3xl font-bold mb-6">InsightAI - Customer Interview Analysis</h1>
       
-      {/* Always visible file upload section */}
-      <div className="space-y-4 mb-6 p-6 border border-gray-200 rounded-md bg-white shadow-sm">
-        <div className="flex flex-col space-y-2">
-          <label 
-            htmlFor="file-input" 
-            className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
-          >
-            Upload audio or video file
-          </label>
-          <div className="flex flex-col space-y-2">
-            <input
-              id="file-input"
-              type="file"
-              accept="audio/*,video/*"
-              disabled={isSubmitting}
-              onChange={handleFilesSelected}
-              className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-            />
-            <p className="text-sm text-gray-500">
-              MP3 files up to 25MB
-            </p>
-          </div>
-        </div>
-        
-        <div className="flex justify-end">
-          <button 
-            type="button" 
-            disabled={isSubmitting || !selectedFile} 
-            onClick={handleSubmit}
-            className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground shadow hover:bg-primary/90 h-9 px-4 py-2"
-          >
-            <div>
-              {isSubmitting ? (
-                <div className="flex items-center">
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  <div>Processing...</div>
+      {showAuthPrompt ? (
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle>Authentication Required</CardTitle>
+            <CardDescription>Please sign in to use the InsightAI platform</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p className="mb-4">You need to be signed in to upload and analyze interviews.</p>
+          </CardContent>
+          <CardFooter>
+            <Button 
+              onClick={() => window.location.href = '/auth?returnUrl=/transcribe'}
+              className="mr-2"
+            >
+              Sign In
+            </Button>
+          </CardFooter>
+        </Card>
+      ) : (
+        <>
+          {/* Always visible file upload section */}
+          <div className="space-y-4 mb-6 p-6 border border-gray-200 rounded-md bg-white shadow-sm">
+            <div className="flex flex-col space-y-2">
+              <label 
+                htmlFor="file-input" 
+                className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+              >
+                Upload audio or video file
+              </label>
+              <div className="flex flex-col space-y-2">
+                <input
+                  id="file-input"
+                  type="file"
+                  accept="audio/*,video/*"
+                  disabled={isSubmitting}
+                  onChange={handleFilesSelected}
+                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                />
+                <p className="text-sm text-gray-500">
+                  MP3 files up to 25MB
+                </p>
+              </div>
+            </div>
+            
+            <div className="flex justify-end">
+              <button 
+                type="button" 
+                disabled={isSubmitting || !selectedFile} 
+                onClick={handleSubmit}
+                className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground shadow hover:bg-primary/90 h-9 px-4 py-2"
+              >
+                <div>
+                  {isSubmitting ? (
+                    <div className="flex items-center">
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      <div>Processing...</div>
+                    </div>
+                  ) : (
+                    <div className="flex items-center">
+                      <Upload className="mr-2 h-4 w-4" />
+                      <div>Upload & Analyze</div>
+                    </div>
+                  )}
                 </div>
-              ) : (
-                <div className="flex items-center">
-                  <Upload className="mr-2 h-4 w-4" />
-                  <div>Upload & Analyze</div>
+              </button>
+            </div>
+            
+            {uploadProgress > 0 && (
+              <div className="w-full mt-4">
+                <div className="flex justify-between text-xs mb-1">
+                  <span>Uploading...</span>
+                  <span>{uploadProgress.toFixed(0)}%</span>
                 </div>
-              )}
-            </div>
-          </button>
-        </div>
-        
-        {uploadProgress > 0 && (
-          <div className="w-full mt-4">
-            <div className="flex justify-between text-xs mb-1">
-              <span>Uploading...</span>
-              <span>{uploadProgress.toFixed(0)}%</span>
-            </div>
-            <div className="w-full bg-gray-200 rounded-full h-2">
-              <div 
-                className="bg-blue-600 h-2 rounded-full" 
-                style={{ width: `${uploadProgress}%` }}
-              ></div>
-            </div>
+                <div className="w-full bg-gray-200 rounded-full h-2">
+                  <div 
+                    className="bg-blue-600 h-2 rounded-full" 
+                    style={{ width: `${uploadProgress}%` }}
+                  ></div>
+                </div>
+              </div>
+            )}
           </div>
-        )}
-      </div>
-      
-      {/* Status banner */}
-      {transcriptionRecord && (
-        <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-md">
-          <div className="flex items-center text-green-700">
-            <Check className="w-5 h-5 mr-2" />
-            <span>
-              <span className="font-medium">{transcriptionRecord.fileName}:</span> {' '}
-              Transcription complete. {transcriptionRecord.summaryText ? 'Summary generated.' : ''} {transcriptionRecord.analysisData ? 'Analysis complete.' : ''}
-            </span>
-          </div>
-        </div>
-      )}
-      
-      {/* Tabs section */}
-      {transcriptionRecord && renderTranscriptionContent()}
-      
-      {/* Chat Assistant Section - as a separate prominent section */}
-      {transcriptionRecord?.transcriptionText && (
-        <div className="mb-6 p-6 border border-blue-200 rounded-md bg-white shadow-md">
-          <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
-            <Bot className="h-5 w-5 text-blue-500" />
-            Interview Chat Assistant
-          </h2>
-          <p className="text-gray-600 mb-4">
-            Ask questions about this interview to get deeper insights. For example: "What were the main pain points?" or "Summarize the feature requests."
-          </p>
-          <TranscriptChat transcriptionRecord={transcriptionRecord} />
-        </div>
+          
+          {/* Status banner */}
+          {transcriptionRecord && (
+            <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-md">
+              <div className="flex items-center text-green-700">
+                <Check className="w-5 h-5 mr-2" />
+                <span>
+                  <span className="font-medium">{transcriptionRecord.fileName}:</span> {' '}
+                  Transcription complete. {transcriptionRecord.summaryText ? 'Summary generated.' : ''} {transcriptionRecord.analysisData ? 'Analysis complete.' : ''}
+                </span>
+              </div>
+            </div>
+          )}
+          
+          {/* Tabs section */}
+          {transcriptionRecord && renderTranscriptionContent()}
+          
+          {/* Chat Assistant Section - as a separate prominent section */}
+          {transcriptionRecord?.transcriptionText && (
+            <div className="mb-6 p-6 border border-blue-200 rounded-md bg-white shadow-md">
+              <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
+                <Bot className="h-5 w-5 text-blue-500" />
+                Interview Chat Assistant
+              </h2>
+              <p className="text-gray-600 mb-4">
+                Ask questions about this interview to get deeper insights. For example: "What were the main pain points?" or "Summarize the feature requests."
+              </p>
+              <TranscriptChat transcriptionRecord={transcriptionRecord} />
+            </div>
+          )}
+        </>
       )}
     </div>
   );
