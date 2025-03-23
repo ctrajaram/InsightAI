@@ -9,7 +9,8 @@ import { TranscriptionRecord } from '@/lib/media-storage';
 import useSupabase from '@/hooks/useSupabase';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { FileText, Sparkles, Download, Share2, AlertCircle } from 'lucide-react';
+import { FileText, Sparkles, Download, Share2, AlertCircle, TrendingUp } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
 
 export default function MediaTranscriptionPage() {
   const { user, loading } = useSupabase();
@@ -61,9 +62,9 @@ export default function MediaTranscriptionPage() {
       <div className="container mt-8 mb-12 px-4 md:px-6">
         <div className="grid gap-6">
           <div className="flex flex-col gap-2">
-            <h1 className="text-3xl font-bold">Media Transcription</h1>
+            <h1 className="text-3xl font-bold">Media Transcription & Analysis</h1>
             <p className="text-muted-foreground">
-              Upload your MP3 files and get them transcribed using AI.
+              Upload audio or video files and get AI-powered transcriptions, summaries, and insights.
             </p>
           </div>
           
@@ -95,7 +96,7 @@ export default function MediaTranscriptionPage() {
             <CardHeader>
               <CardTitle>Upload Media</CardTitle>
               <CardDescription>
-                Upload an MP3 file to get it transcribed
+                Supported formats: MP3, MP4, WAV, M4A (max 25MB)
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -104,46 +105,92 @@ export default function MediaTranscriptionPage() {
           </Card>
           
           {completedTranscription && completedTranscription.summaryStatus === 'completed' && (
-            <Card className="mt-8 overflow-hidden border-purple-200">
-              <div className="bg-gradient-to-r from-purple-100 to-indigo-50 border-b">
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <Sparkles className="h-5 w-5 text-purple-500" />
-                    <span>AI-Generated Summary</span>
-                  </CardTitle>
-                  <CardDescription>
-                    File: {completedTranscription.fileName}
-                  </CardDescription>
-                </CardHeader>
+            <div className="grid gap-4">
+              <div className="flex items-center">
+                <h2 className="text-xl font-semibold">Transcription & Insights</h2>
+                <div className="h-px flex-1 bg-border ml-4"></div>
               </div>
-              <CardContent className="pt-6">
-                <div className="bg-white p-5 rounded-md whitespace-pre-wrap prose max-w-none">
-                  {completedTranscription.summaryText}
-                </div>
-              </CardContent>
-              <CardFooter className="flex justify-end gap-2 border-t bg-gray-50 py-3">
-                <Button
-                  variant="outline" 
-                  size="sm" 
-                  className="flex items-center gap-1"
-                  onClick={downloadSummary}
-                >
-                  <Download className="h-4 w-4" />
-                  <span>Download</span>
-                </Button>
-                <Button
-                  variant="outline" 
-                  size="sm" 
-                  className="flex items-center gap-1"
-                >
-                  <Share2 className="h-4 w-4" />
-                  <span>Share</span>
-                </Button>
-              </CardFooter>
-            </Card>
+              
+              <div className="grid gap-4 md:grid-cols-3">
+                <Card>
+                  <CardHeader className="pb-2">
+                    <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center mb-2">
+                      <FileText className="h-6 w-6 text-primary" />
+                    </div>
+                    <CardTitle className="text-lg">Transcription</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="bg-white p-5 rounded-md whitespace-pre-wrap prose max-w-none">
+                      {completedTranscription.transcriptionText}
+                    </div>
+                  </CardContent>
+                  <CardFooter className="flex justify-end gap-2 border-t bg-gray-50 py-3">
+                    <Button
+                      variant="outline" 
+                      size="sm" 
+                      className="flex items-center gap-1"
+                      onClick={downloadTranscript}
+                    >
+                      <Download className="h-4 w-4" />
+                      <span>Download</span>
+                    </Button>
+                  </CardFooter>
+                </Card>
+                
+                <Card>
+                  <CardHeader className="pb-2">
+                    <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center mb-2">
+                      <Sparkles className="h-6 w-6 text-primary" />
+                    </div>
+                    <CardTitle className="text-lg">Summarization</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="bg-white p-5 rounded-md whitespace-pre-wrap prose max-w-none">
+                      {completedTranscription.summaryText}
+                    </div>
+                  </CardContent>
+                  <CardFooter className="flex justify-end gap-2 border-t bg-gray-50 py-3">
+                    <Button
+                      variant="outline" 
+                      size="sm" 
+                      className="flex items-center gap-1"
+                      onClick={downloadSummary}
+                    >
+                      <Download className="h-4 w-4" />
+                      <span>Download</span>
+                    </Button>
+                  </CardFooter>
+                </Card>
+                
+                <Card>
+                  <CardHeader className="pb-2">
+                    <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center mb-2">
+                      <TrendingUp className="h-6 w-6 text-primary" />
+                    </div>
+                    <CardTitle className="text-lg">Insights Analysis</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="flex flex-col gap-2">
+                      <div className="flex items-center gap-2">
+                        <Badge variant="positive" className="w-20 justify-center">Positive</Badge>
+                        <span className="text-sm text-muted-foreground">Customer is satisfied and expresses positive opinions</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Badge variant="neutral" className="w-20 justify-center">Neutral</Badge>
+                        <span className="text-sm text-muted-foreground">Customer expresses balanced or mixed opinions</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Badge variant="negative" className="w-20 justify-center">Negative</Badge>
+                        <span className="text-sm text-muted-foreground">Customer expresses dissatisfaction or frustration</span>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+            </div>
           )}
         </div>
       </div>
     </div>
   );
-} 
+}

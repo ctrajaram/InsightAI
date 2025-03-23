@@ -21,12 +21,49 @@ export interface TranscriptionRecord {
   transcriptionText: string;
   summaryText?: string;
   summaryStatus?: 'pending' | 'processing' | 'completed' | 'error';
+  analysisStatus?: 'pending' | 'processing' | 'completed' | 'error';
+  analysisData?: {
+    sentiment: 'positive' | 'neutral' | 'negative';
+    sentiment_explanation: string;
+    pain_points: Array<{
+      issue: string;
+      description: string;
+      quotes: string[];
+    }>;
+    feature_requests: Array<{
+      feature: string;
+      description: string;
+      quotes: string[];
+    }>;
+  };
   createdAt: string;
   fileName: string;
   fileSize: number;
   duration?: number;
   status: 'processing' | 'completed' | 'error';
   error?: string;
+}
+
+/**
+ * Maps database record (snake_case) to TranscriptionRecord interface (camelCase)
+ */
+export function mapDbRecordToTranscriptionRecord(dbRecord: any): TranscriptionRecord {
+  return {
+    id: dbRecord.id,
+    mediaPath: dbRecord.media_path,
+    mediaUrl: dbRecord.media_url,
+    transcriptionText: dbRecord.transcription_text || '',
+    summaryText: dbRecord.summary_text,
+    summaryStatus: dbRecord.summary_status,
+    analysisStatus: dbRecord.analysis_status,
+    analysisData: dbRecord.analysis_data,
+    createdAt: dbRecord.created_at,
+    fileName: dbRecord.file_name,
+    fileSize: dbRecord.file_size,
+    duration: dbRecord.duration,
+    status: dbRecord.status,
+    error: dbRecord.error
+  };
 }
 
 /**
@@ -207,18 +244,7 @@ export async function createTranscriptionRecord(
   }
   
   // Map database field names to our TypeScript interface
-  return {
-    id: data.id,
-    mediaPath: data.media_path,
-    mediaUrl: data.media_url,
-    transcriptionText: data.transcription_text || '',
-    createdAt: data.created_at,
-    fileName: data.file_name,
-    fileSize: data.file_size,
-    duration: data.duration,
-    status: data.status,
-    error: data.error
-  };
+  return mapDbRecordToTranscriptionRecord(data);
 }
 
 /**
@@ -249,20 +275,7 @@ export async function updateTranscriptionRecord(
     throw new Error(`Failed to update transcription record: ${error.message}`);
   }
   
-  return {
-    id: data.id,
-    mediaPath: data.media_path,
-    mediaUrl: data.media_url,
-    transcriptionText: data.transcription_text || '',
-    summaryText: data.summary_text || '',
-    summaryStatus: data.summary_status,
-    createdAt: data.created_at,
-    fileName: data.file_name,
-    fileSize: data.file_size,
-    duration: data.duration,
-    status: data.status,
-    error: data.error
-  };
+  return mapDbRecordToTranscriptionRecord(data);
 }
 
 /**
@@ -282,18 +295,7 @@ export async function getUserTranscriptions(userId: string): Promise<Transcripti
     throw new Error(`Failed to fetch transcriptions: ${error.message}`);
   }
   
-  return (data || []).map(record => ({
-    id: record.id,
-    mediaPath: record.media_path,
-    mediaUrl: record.media_url,
-    transcriptionText: record.transcription_text || '',
-    createdAt: record.created_at,
-    fileName: record.file_name,
-    fileSize: record.file_size,
-    duration: record.duration,
-    status: record.status,
-    error: record.error
-  }));
+  return (data || []).map(record => mapDbRecordToTranscriptionRecord(record));
 }
 
 /**
@@ -345,20 +347,7 @@ export async function updateTranscriptionWithSummary(
     throw new Error(`Failed to update summary in transcription record: ${error.message}`);
   }
   
-  return {
-    id: data.id,
-    mediaPath: data.media_path,
-    mediaUrl: data.media_url,
-    transcriptionText: data.transcription_text || '',
-    summaryText: data.summary_text || '',
-    summaryStatus: data.summary_status,
-    createdAt: data.created_at,
-    fileName: data.file_name,
-    fileSize: data.file_size,
-    duration: data.duration,
-    status: data.status,
-    error: data.error
-  };
+  return mapDbRecordToTranscriptionRecord(data);
 }
 
 /**
