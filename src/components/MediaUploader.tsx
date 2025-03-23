@@ -4,18 +4,20 @@ import React, { useState, useEffect } from 'react';
 import { FileUpload } from './ui/file-upload';
 import { Card, CardContent, CardFooter, CardHeader, CardTitle, CardDescription } from './ui/card';
 import { Button } from './ui/button';
-import { Loader2, AudioWaveform, Video, Check, AlertCircle, FileText, Sparkles, AlertTriangle, X, FileAudio, Clock, CheckCircle } from 'lucide-react';
+import { Loader2, AudioWaveform, Video, Check, AlertCircle, FileText, Sparkles, AlertTriangle, X, FileAudio, Clock, CheckCircle, TrendingUp } from 'lucide-react';
 import useSupabase from '@/hooks/useSupabase';
 import { 
   TranscriptionRecord, 
   uploadMediaFile,
-  createTranscriptionRecord
+  createTranscriptionRecord,
+  mapDbRecordToTranscriptionRecord
 } from '@/lib/media-storage';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import Link from 'next/link';
 import { Label } from './ui/label';
 import { Input } from './ui/input';
 import { Progress } from './ui/progress';
+import { Badge } from './ui/badge';
 
 export default function MediaUploader({ onComplete }: { onComplete?: (transcription: TranscriptionRecord) => void }) {
   const { supabase, user } = useSupabase();
@@ -24,10 +26,13 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
   const [uploadProgress, setUploadProgress] = useState(0);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isSummarizing, setIsSummarizing] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [transcriptionRecord, setTranscriptionRecord] = useState<TranscriptionRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [transcriptionStatus, setTranscriptionStatus] = useState<'pending' | 'processing' | 'completed' | 'error'>('pending');
+  const [analysisStatus, setAnalysisStatus] = useState<'pending' | 'processing' | 'completed' | 'error'>('pending');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [currentTranscriptionId, setCurrentTranscriptionId] = useState<string | null>(null);
 
   const handleFileSelected = (event: React.ChangeEvent<HTMLInputElement> | File[]) => {
     // Handle both direct file array and input change event
@@ -133,7 +138,8 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
         
         console.log('Verified record exists in database:', verifyRecord);
         
-        setTranscriptionRecord(record);
+        const transcriptionRecord = mapDbRecordToTranscriptionRecord(verifyRecord);
+        setTranscriptionRecord(transcriptionRecord);
         clearInterval(progressInterval);
         setUploadProgress(100);
         
@@ -170,6 +176,10 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
     try {
       setIsTranscribing(true);
       setTranscriptionStatus('processing');
+      
+      // Store the transcription ID in a state variable for later use
+      console.log('Setting current transcription ID:', transcriptionId);
+      setCurrentTranscriptionId(transcriptionId);
       
       // Get the current session to retrieve the access token
       const { data: { session } } = await supabase.auth.getSession();
@@ -313,32 +323,78 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
   const generateSummaryForTranscription = async (transcriptionId: string, transcriptionText: string) => {
     try {
       setIsSummarizing(true);
+      setTranscriptionRecord(prev => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          summaryStatus: 'processing'
+        };
+      });
       
-      // Get the current session to retrieve the access token
-      const { data: { session } } = await supabase.auth.getSession();
+      console.log('Generating summary for transcription with ID:', transcriptionId);
+      console.log('Using stored transcription ID:', currentTranscriptionId);
       
-      if (!session || !session.access_token) {
-        throw new Error('You must be logged in to generate a summary. Please sign in and try again.');
+      // Use the stored ID if available, otherwise use the passed ID
+      const finalTranscriptionId = currentTranscriptionId || transcriptionId;
+      
+      // Validate the transcription ID
+      if (!finalTranscriptionId || typeof finalTranscriptionId !== 'string' || finalTranscriptionId.trim() === '') {
+        console.error('Invalid transcription ID for summary:', finalTranscriptionId);
+        throw new Error('Invalid transcription ID. Please try uploading again.');
       }
       
-      console.log('Sending transcription to summarization API...');
+      // Verify the transcription exists in the database before making the API call
+      console.log('Verifying transcription exists in database before summary API call...');
+      const { data: existingRecord, error: recordError } = await supabase
+        .from('transcriptions')
+        .select('*')
+        .eq('id', finalTranscriptionId)
+        .single();
+        
+      if (recordError) {
+        console.error('Error fetching transcription record for summary:', recordError);
+        throw new Error(`Transcription record not found: ${recordError.message}`);
+      }
       
-      // Call the summary generation API
+      if (!existingRecord) {
+        console.error('Transcription record not found for summary');
+        throw new Error('The transcription record could not be found. Please try uploading again.');
+      }
+      
+      console.log('Found transcription record for summary:', existingRecord);
+      
+      // Call the summary API
+      console.log('Sending transcription to summary API...');
+      
+      // Get the session for authentication
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData?.session?.access_token;
+      
+      if (!accessToken) {
+        console.error('No access token available for API call');
+        throw new Error('Authentication required. Please sign in and try again.');
+      }
+      
+      console.log('Using access token for API authentication');
+      
       const response = await fetch('/api/summarize', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ 
-          transcriptionId,
-          transcriptionText,
-          accessToken: session.access_token
+          transcriptionId: finalTranscriptionId,
+          transcriptionText: transcriptionText,
+          accessToken: accessToken
         }),
+        cache: 'no-store'
       });
       
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to generate summary');
+        const errorMessage = errorData.error || 'Failed to generate summary';
+        
+        throw new Error(errorMessage);
       }
       
       const data = await response.json();
@@ -349,7 +405,7 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
       const { data: verifyData, error: verifyError } = await supabase
         .from('transcriptions')
         .select('id, summary_status, summary_text')
-        .eq('id', transcriptionId)
+        .eq('id', finalTranscriptionId)
         .single();
         
       if (verifyError) {
@@ -368,7 +424,7 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
               summary_text: data.summary.text,
               updated_at: new Date().toISOString()
             })
-            .eq('id', transcriptionId);
+            .eq('id', finalTranscriptionId);
             
           if (updateError) {
             console.error('Direct update failed:', updateError);
@@ -387,6 +443,15 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
         });
       }
       
+      // After summary is complete, start analysis
+      try {
+        console.log('Starting automatic analysis...');
+        await requestAnalysis(finalTranscriptionId);
+      } catch (analysisError) {
+        console.error('Failed to generate analysis:', analysisError);
+        // Continue with the process even if analysis fails
+      }
+      
       return data.summary.text;
     } catch (err: any) {
       console.error('Summary generation error:', err);
@@ -400,6 +465,184 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
       throw err;
     } finally {
       setIsSummarizing(false);
+    }
+  };
+
+  const requestAnalysis = async (transcriptionId: string) => {
+    try {
+      console.log('Starting analysis with transcription ID:', transcriptionId);
+      console.log('Using stored transcription ID:', currentTranscriptionId);
+      
+      // Use the stored ID if available, otherwise use the passed ID
+      const finalTranscriptionId = currentTranscriptionId || transcriptionId;
+      
+      if (!finalTranscriptionId || typeof finalTranscriptionId !== 'string' || finalTranscriptionId.trim() === '') {
+        console.error('Invalid transcription ID:', finalTranscriptionId);
+        throw new Error('Invalid transcription ID. Please try uploading again.');
+      }
+      
+      // Validate UUID format
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(finalTranscriptionId.trim())) {
+        console.error('Invalid UUID format for transcription ID:', finalTranscriptionId);
+        throw new Error('Invalid transcription ID format. Please try uploading again.');
+      }
+      
+      setIsAnalyzing(true);
+      setAnalysisStatus('processing');
+      
+      console.log('Preparing to analyze transcription with ID:', finalTranscriptionId);
+      
+      // Verify the transcription exists in the database before making the API call
+      console.log('Verifying transcription exists in database before API call...');
+      const { data: existingRecord, error: recordError } = await supabase
+        .from('transcriptions')
+        .select('*')
+        .eq('id', finalTranscriptionId)
+        .single();
+        
+      if (recordError) {
+        console.error('Error fetching transcription record:', recordError);
+        console.error('Error code:', recordError.code);
+        console.error('Error message:', recordError.message);
+        console.error('Error details:', recordError.details);
+        console.error('Transcription ID that failed:', finalTranscriptionId);
+        
+        // Try listing recent transcriptions to debug
+        console.log('Listing recent transcriptions to debug...');
+        const { data: recentTranscriptions } = await supabase
+          .from('transcriptions')
+          .select('id, created_at, status')
+          .order('created_at', { ascending: false })
+          .limit(5);
+          
+        console.log('Recent transcriptions:', recentTranscriptions);
+        
+        throw new Error(`Transcription record not found: ${recordError.message}`);
+      }
+      
+      if (!existingRecord) {
+        console.error('Transcription record not found, but no error returned');
+        console.error('Transcription ID that failed:', finalTranscriptionId);
+        throw new Error('The transcription record could not be found. Please try uploading again.');
+      }
+      
+      console.log('Found transcription record:', existingRecord);
+      console.log('Transcription text length:', existingRecord.transcription_text?.length || 0);
+      
+      // Ensure the transcription text exists - use snake_case field name from database
+      if (!existingRecord.transcription_text) {
+        console.error('Transcription text is empty for record:', existingRecord);
+        throw new Error('The transcription text is empty. Please try uploading again.');
+      }
+      
+      // Call the analysis API
+      console.log('Sending transcription to analysis API...');
+      console.log('Transcription ID being sent:', existingRecord.id); // Use ID directly from the database record
+      console.log('Transcription record from database:', existingRecord);
+      
+      // Get the session for authentication
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData?.session?.access_token;
+      
+      if (!accessToken) {
+        console.error('No access token available for API call');
+        throw new Error('Authentication required. Please sign in and try again.');
+      }
+      
+      console.log('Using access token for API authentication');
+      
+      // Log the exact payload being sent to the API
+      const payload = { 
+        transcriptionId: existingRecord.id,
+        // Include the transcription text as a backup in case the API can't find it in the database
+        transcriptionText: existingRecord.transcription_text,
+        accessToken: accessToken
+      };
+      console.log('API request payload:', JSON.stringify(payload));
+      
+      const response = await fetch('/api/analyze-transcript', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+        // Add cache control to prevent caching
+        cache: 'no-store'
+      });
+      
+      // Log the response status
+      console.log('Analysis API response status:', response.status);
+      
+      if (!response.ok) {
+        let errorMessage = 'Failed to analyze transcript';
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.error || errorMessage;
+        } catch (e) {
+          console.error('Failed to parse error response:', e);
+        }
+        console.error('Analysis API error:', errorMessage);
+        throw new Error(errorMessage);
+      }
+      
+      const data = await response.json();
+      console.log('Analysis generated successfully:', data);
+      
+      // Update the transcription record with the analysis data
+      // Map from snake_case database fields to camelCase for the UI
+      if (transcriptionRecord) {
+        // Fetch the latest record from the database to ensure we have the most up-to-date data
+        const { data: updatedDbRecord, error: updateError } = await supabase
+          .from('transcriptions')
+          .select('*')
+          .eq('id', finalTranscriptionId)
+          .single();
+          
+        if (updateError) {
+          console.error('Error fetching updated record:', updateError);
+        } else if (updatedDbRecord) {
+          console.log('Retrieved updated record after analysis:', updatedDbRecord);
+          // Map the database record to our TypeScript interface
+          const updatedRecord = mapDbRecordToTranscriptionRecord(updatedDbRecord);
+          setTranscriptionRecord(updatedRecord);
+        } else {
+          // Fallback to just updating the analysis data if we can't get the full record
+          setTranscriptionRecord({
+            ...transcriptionRecord,
+            analysisStatus: 'completed' as const,
+            analysisData: data.analysis
+          });
+        }
+      }
+      
+      setAnalysisStatus('completed');
+      return data.analysis;
+    } catch (err: any) {
+      console.error('Analysis error:', err);
+      setAnalysisStatus('error');
+      if (transcriptionRecord) {
+        setTranscriptionRecord({
+          ...transcriptionRecord,
+          analysisStatus: 'error' as const,
+          error: err.message
+        });
+      }
+      throw err;
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  const renderSentimentBadge = (sentiment: string) => {
+    switch (sentiment) {
+      case 'positive':
+        return <Badge variant="positive">Positive</Badge>;
+      case 'negative':
+        return <Badge variant="negative">Negative</Badge>;
+      case 'neutral':
+      default:
+        return <Badge variant="neutral">Neutral</Badge>;
     }
   };
 
@@ -458,6 +701,15 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
       );
     }
     
+    if (isAnalyzing) {
+      return (
+        <div className="flex items-center gap-2 text-amber-500 p-3 bg-amber-50 rounded-md">
+          <Loader2 size={18} className="animate-spin" />
+          <p className="text-sm">Analyzing transcript for insights...</p>
+        </div>
+      );
+    }
+    
     if (transcriptionRecord?.status === 'completed') {
       return (
         <div className="flex items-center gap-2 text-green-500 p-3 bg-green-50 rounded-md">
@@ -465,6 +717,7 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
           <p className="text-sm">
             Transcription complete! 
             {transcriptionRecord.summaryStatus === 'completed' && ' Summary generated.'}
+            {transcriptionRecord.analysisStatus === 'completed' && ' Analysis complete.'}
           </p>
         </div>
       );
@@ -479,7 +732,7 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
     return (
       <div className="mt-4">
         <Tabs defaultValue="summary" className="w-full">
-          <TabsList className="grid w-full grid-cols-2">
+          <TabsList className="grid w-full grid-cols-3">
             <TabsTrigger value="summary" disabled={!transcriptionRecord.summaryText}>
               <div className="flex items-center gap-2">
                 <Sparkles size={16} />
@@ -490,6 +743,12 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
               <div className="flex items-center gap-2">
                 <FileText size={16} />
                 <span>Full Transcript</span>
+              </div>
+            </TabsTrigger>
+            <TabsTrigger value="insights" disabled={!transcriptionRecord.analysisData}>
+              <div className="flex items-center gap-2">
+                <TrendingUp size={16} />
+                <span>Insights</span>
               </div>
             </TabsTrigger>
           </TabsList>
@@ -544,25 +803,6 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
                   <p className="text-sm text-center max-w-md">
                     {transcriptionRecord.error || "There was an error generating the summary. Please try again."}
                   </p>
-                  <Button 
-                    variant="outline" 
-                    size="sm" 
-                    className="mt-2"
-                    onClick={() => generateSummaryForTranscription(transcriptionRecord.id, transcriptionRecord.transcriptionText)}
-                    disabled={isSummarizing}
-                  >
-                    {isSummarizing ? (
-                      <>
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Retrying...
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="mr-2 h-4 w-4" />
-                        Try Again
-                      </>
-                    )}
-                  </Button>
                 </div>
               </div>
             )}
@@ -580,6 +820,121 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
               </CardContent>
             </Card>
           </TabsContent>
+          
+          <TabsContent value="insights" className="mt-2">
+            {transcriptionRecord.analysisStatus === 'completed' && transcriptionRecord.analysisData ? (
+              <div className="space-y-4">
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-lg flex items-center gap-2">
+                      <TrendingUp className="h-5 w-5 text-amber-500" />
+                      Customer Sentiment Analysis
+                    </CardTitle>
+                    <CardDescription className="flex items-center justify-between">
+                      <span>Generated with OpenAI GPT-4</span>
+                      {renderSentimentBadge(transcriptionRecord.analysisData.sentiment)}
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="p-4 bg-amber-50 rounded-md">
+                      <p className="text-sm">{transcriptionRecord.analysisData.sentiment_explanation}</p>
+                    </div>
+                  </CardContent>
+                </Card>
+                
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-lg flex items-center gap-2">
+                      <AlertCircle className="h-5 w-5 text-red-500" />
+                      Top Pain Points
+                    </CardTitle>
+                    <CardDescription>Issues mentioned by the customer</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-4">
+                      {transcriptionRecord.analysisData.pain_points.map((point, index) => (
+                        <div key={index} className="border-b pb-3 last:border-0 last:pb-0">
+                          <h4 className="font-medium text-sm">{point.issue}</h4>
+                          <p className="text-sm text-gray-600 mt-1">{point.description}</p>
+                          {point.quotes.length > 0 && (
+                            <div className="mt-2 pl-3 border-l-2 border-gray-200">
+                              {point.quotes.map((quote, qIndex) => (
+                                <p key={qIndex} className="text-xs italic text-gray-500 mt-1">
+                                  "{quote}"
+                                </p>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+                
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-lg flex items-center gap-2">
+                      <Sparkles className="h-5 w-5 text-green-500" />
+                      Feature Requests
+                    </CardTitle>
+                    <CardDescription>Improvements requested by the customer</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-4">
+                      {transcriptionRecord.analysisData.feature_requests.map((feature, index) => (
+                        <div key={index} className="border-b pb-3 last:border-0 last:pb-0">
+                          <h4 className="font-medium text-sm">{feature.feature}</h4>
+                          <p className="text-sm text-gray-600 mt-1">{feature.description}</p>
+                          {feature.quotes.length > 0 && (
+                            <div className="mt-2 pl-3 border-l-2 border-gray-200">
+                              {feature.quotes.map((quote, qIndex) => (
+                                <p key={qIndex} className="text-xs italic text-gray-500 mt-1">
+                                  "{quote}"
+                                </p>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+            ) : transcriptionRecord.analysisStatus === 'processing' ? (
+              <div className="animate-pulse">
+                <Card>
+                  <CardHeader className="pb-2">
+                    <div className="flex items-center justify-between">
+                      <CardTitle className="text-lg flex items-center gap-2">
+                        <Loader2 className="h-5 w-5 animate-spin text-amber-500" />
+                        Analyzing Transcript...
+                      </CardTitle>
+                    </div>
+                    <CardDescription>Extracting customer sentiment and insights</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-3">
+                      <div className="h-4 bg-muted rounded w-3/4"></div>
+                      <div className="h-4 bg-muted rounded w-full"></div>
+                      <div className="h-4 bg-muted rounded w-5/6"></div>
+                      <div className="h-4 bg-muted rounded w-2/3"></div>
+                      <div className="h-4 bg-muted rounded w-4/5"></div>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+            ) : (
+              <div className="flex items-center justify-center p-6 bg-muted/20 rounded-md">
+                <div className="flex flex-col items-center gap-2 text-muted-foreground">
+                  <AlertTriangle className="h-8 w-8 text-amber-500 mb-2" />
+                  <p className="font-medium">Analysis generation failed</p>
+                  <p className="text-sm text-center max-w-md">
+                    {transcriptionRecord.error || "There was an error analyzing the transcript. Please try again."}
+                  </p>
+                </div>
+              </div>
+            )}
+          </TabsContent>
         </Tabs>
       </div>
     );
@@ -593,6 +948,7 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
       setIsUploading(false);
       setIsTranscribing(false);
       setIsSummarizing(false);
+      setIsAnalyzing(false);
     };
   }, []);
 
@@ -753,4 +1109,4 @@ export default function MediaUploader({ onComplete }: { onComplete?: (transcript
       </form>
     </div>
   );
-} 
+}

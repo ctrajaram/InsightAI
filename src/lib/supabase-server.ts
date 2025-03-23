@@ -1,9 +1,10 @@
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
+import { ResponseCookie } from 'next/dist/compiled/@edge-runtime/cookies';
 
 // Create a server client that can be used in server components
-export const createSupabaseServerClient = () => {
-  const cookieStore = cookies();
+export const createSupabaseServerClient = async () => {
+  const cookieStore = await cookies();
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
@@ -16,14 +17,31 @@ export const createSupabaseServerClient = () => {
     supabaseKey,
     {
       cookies: {
-        get(name: string) {
-          return cookieStore.get(name)?.value;
+        async get(name: string) {
+          const cookie = await cookieStore.get(name);
+          return cookie?.value;
         },
-        set(name: string, value: string, options: any) {
-          cookieStore.set({ name, value, ...options });
+        async set(name: string, value: string, options: any) {
+          try {
+            await cookieStore.set({
+              name,
+              value,
+              ...options
+            });
+          } catch (error) {
+            console.error('Error setting cookie:', error);
+          }
         },
-        remove(name: string, options: any) {
-          cookieStore.set({ name, value: '', ...options });
+        async remove(name: string, options: any) {
+          try {
+            await cookieStore.set({
+              name,
+              value: '',
+              ...options
+            });
+          } catch (error) {
+            console.error('Error removing cookie:', error);
+          }
         },
       },
     }
@@ -31,7 +49,7 @@ export const createSupabaseServerClient = () => {
 };
 
 // Create a Supabase client for server actions
-export const createSupabaseServerActionClient = (cookieStore: any) => {
+export const createSupabaseServerActionClient = async (cookieStore: any) => {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
@@ -44,16 +62,33 @@ export const createSupabaseServerActionClient = (cookieStore: any) => {
     supabaseKey,
     {
       cookies: {
-        get(name: string) {
-          return cookieStore.get(name)?.value;
+        async get(name: string) {
+          const cookie = await cookieStore.get(name);
+          return cookie?.value;
         },
-        set(name: string, value: string, options: any) {
-          cookieStore.set({ name, value, ...options });
+        async set(name: string, value: string, options: any) {
+          try {
+            await cookieStore.set({
+              name,
+              value,
+              ...options
+            });
+          } catch (error) {
+            console.error('Error setting cookie:', error);
+          }
         },
-        remove(name: string, options: any) {
-          cookieStore.set({ name, value: '', ...options });
+        async remove(name: string, options: any) {
+          try {
+            await cookieStore.set({
+              name,
+              value: '',
+              ...options
+            });
+          } catch (error) {
+            console.error('Error removing cookie:', error);
+          }
         },
       },
     }
   );
-}; 
+};
