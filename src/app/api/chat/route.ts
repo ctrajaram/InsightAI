@@ -197,17 +197,27 @@ Help the user understand the interview data by answering their questions about t
     // Add system message to the beginning of the messages array
     const augmentedMessages = [systemMessage, ...messages];
 
+    // Format messages for OpenAI API (only include role and content)
+    const formattedMessages = augmentedMessages.map(msg => ({
+      role: msg.role,
+      content: msg.content
+    }));
+    
+    console.log('Sending formatted messages to OpenAI:', JSON.stringify(formattedMessages.slice(0, 2)));
+    
     // Call the OpenAI API
     const response = await openai.chat.completions.create({
-      model: 'gpt-4-turbo',
-      messages: augmentedMessages,
+      model: 'gpt-4',
+      messages: formattedMessages,
       temperature: 0.7,
       max_tokens: 800,
     });
+    
+    console.log('Received response from OpenAI:', response.choices[0].message);
 
     // Return the assistant's response
     return NextResponse.json({
-      message: response.choices[0].message,
+      response: response.choices[0].message.content,
     });
   } catch (error: any) {
     console.error('Chat API error:', error);
