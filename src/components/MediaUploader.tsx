@@ -836,113 +836,119 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
             </TabsContent>
 
             <TabsContent value="analysis" className="pt-4">
-              {transcriptionRecord?.analysisData ? (
-                <div className="space-y-6">
-                  <div className="bg-white rounded-md p-6 border border-gray-100 space-y-4">
-                    <div className="flex items-center mb-2">
-                      <Heart className="h-5 w-5 mr-2 text-rose-500" />
-                      <h3 className="text-lg font-medium">Customer Sentiment</h3>
+              {(() => {
+                // Use an IIFE to better handle conditional rendering
+                if (isAnalyzing) {
+                  return (
+                    <div className="flex flex-col items-center justify-center p-8 text-amber-600">
+                      <Loader2 className="h-8 w-8 animate-spin mb-4" />
+                      <p>Generating analysis...</p>
                     </div>
-                    
-                    {/* Display sentiment with improved type safety */}
-                    <div className="flex flex-col gap-2">
-                      {/* Debug info to see the actual raw sentiment value */}
-                      <div className="text-xs text-gray-500 mb-1">
-                        Raw sentiment data: {JSON.stringify(transcriptionRecord?.analysisData || {})}
+                  );
+                }
+
+                if (!transcriptionRecord?.analysisData) {
+                  return (
+                    <div className="p-6 text-center text-gray-500">
+                      <FileQuestion className="h-12 w-12 mx-auto mb-4 text-gray-400" />
+                      <p className="mb-4">No analysis available yet</p>
+                      <Button 
+                        onClick={() => transcriptionRecord?.id && requestAnalysis(transcriptionRecord.id)}
+                        disabled={isAnalyzing || !transcriptionRecord?.id}
+                        className="bg-indigo-600 hover:bg-indigo-700"
+                      >
+                        <BarChart className="mr-2 h-4 w-4" />
+                        Generate Analysis
+                      </Button>
+                    </div>
+                  );
+                }
+
+                // If we have analysis data, render it
+                const { analysisData } = transcriptionRecord;
+                
+                return (
+                  <div className="space-y-6">
+                    <div className="bg-white rounded-md p-6 border border-gray-100 space-y-4">
+                      <div className="flex items-center mb-2">
+                        <Heart className="h-5 w-5 mr-2 text-rose-500" />
+                        <h3 className="text-lg font-medium">Customer Sentiment</h3>
                       </div>
                       
-                      {(() => {
-                        // Using IIFE for better type handling
-                        const sentimentData = transcriptionRecord?.analysisData?.sentiment;
-                        
-                        if (!sentimentData) {
-                          return <span className="text-gray-500">No sentiment data available</span>;
-                        }
-                        
-                        const sentimentString = String(sentimentData).toLowerCase();
-                        
-                        let bgColorClass = 'bg-gray-100 text-gray-800';
-                        if (sentimentString.includes('positive')) {
-                          bgColorClass = 'bg-green-100 text-green-800';
-                        } else if (sentimentString.includes('neutral')) {
-                          bgColorClass = 'bg-blue-100 text-blue-800';
-                        } else if (sentimentString.includes('negative')) {
-                          bgColorClass = 'bg-red-100 text-red-800';
-                        }
-                        
-                        return (
-                          <Badge className={`text-sm py-1 px-3 rounded-full ${bgColorClass}`}>
-                            {String(sentimentData)}
-                          </Badge>
-                        );
-                      })()}
+                      <div className="flex flex-col gap-2">
+                        {(() => {
+                          // Using IIFE for better type handling
+                          const sentimentData = analysisData?.sentiment;
+                          
+                          if (!sentimentData) {
+                            return <span className="text-gray-500">No sentiment data available</span>;
+                          }
+                          
+                          const sentimentString = String(sentimentData).toLowerCase();
+                          
+                          let bgColorClass = 'bg-gray-100 text-gray-800';
+                          if (sentimentString.includes('positive')) {
+                            bgColorClass = 'bg-green-100 text-green-800';
+                          } else if (sentimentString.includes('neutral')) {
+                            bgColorClass = 'bg-blue-100 text-blue-800';
+                          } else if (sentimentString.includes('negative')) {
+                            bgColorClass = 'bg-red-100 text-red-800';
+                          }
+                          
+                          return (
+                            <Badge className={`text-sm py-1 px-3 rounded-full ${bgColorClass}`}>
+                              {String(sentimentData)}
+                            </Badge>
+                          );
+                        })()}
+                      </div>
+                      
+                      {analysisData?.sentiment_explanation && (
+                        <p className="text-gray-700 mt-2">{analysisData.sentiment_explanation}</p>
+                      )}
                     </div>
-                    
-                    {transcriptionRecord?.analysisData?.sentiment_explanation && (
-                      <p className="text-gray-700 mt-2">{transcriptionRecord.analysisData.sentiment_explanation}</p>
+
+                    {analysisData?.pain_points && analysisData.pain_points.length > 0 && (
+                      <div className="bg-white rounded-md p-6 border border-gray-100 space-y-4">
+                        <div className="flex items-center mb-2">
+                          <AlertOctagon className="h-5 w-5 mr-2 text-amber-500" />
+                          <h3 className="text-lg font-medium">Pain Points</h3>
+                        </div>
+                        <ul className="space-y-2">
+                          {analysisData.pain_points.map((point: { issue: string; description: string }, index: number) => (
+                            <li key={index} className="flex items-start">
+                              <div className="h-5 w-5 rounded-full bg-amber-100 text-amber-800 flex items-center justify-center mr-2 flex-shrink-0 mt-0.5">
+                                {index + 1}
+                              </div>
+                              <p className="text-gray-700">{point.issue}: {point.description}</p>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {/* Feature requests section */}
+                    {analysisData?.feature_requests && analysisData.feature_requests.length > 0 && (
+                      <div className="bg-white rounded-md p-6 border border-gray-100 space-y-4">
+                        <div className="flex items-center mb-2">
+                          <Lightbulb className="h-5 w-5 mr-2 text-blue-500" />
+                          <h3 className="text-lg font-medium">Feature Requests</h3>
+                        </div>
+                        <ul className="space-y-2">
+                          {analysisData.feature_requests.map((feature: { feature: string; description: string }, index: number) => (
+                            <li key={index} className="flex items-start">
+                              <div className="h-5 w-5 rounded-full bg-blue-100 text-blue-800 flex items-center justify-center mr-2 flex-shrink-0 mt-0.5">
+                                {index + 1}
+                              </div>
+                              <p className="text-gray-700">{feature.feature}: {feature.description}</p>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
                     )}
                   </div>
-
-                  <div className="bg-white rounded-md p-6 border border-gray-100 space-y-4">
-                    <div className="flex items-center mb-2">
-                      <AlertOctagon className="h-5 w-5 mr-2 text-amber-500" />
-                      <h3 className="text-lg font-medium">Pain Points</h3>
-                    </div>
-                    <ul className="space-y-2">
-                      {transcriptionRecord.analysisData.pain_points && transcriptionRecord.analysisData.pain_points.map((point: { issue: string; description: string }, index: number) => (
-                        <li key={index} className="flex items-start">
-                          <div className="h-5 w-5 rounded-full bg-amber-100 text-amber-800 flex items-center justify-center mr-2 flex-shrink-0 mt-0.5">
-                            {index + 1}
-                          </div>
-                          <p className="text-gray-700">{point.issue}: {point.description}</p>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-
-                  <div className="bg-white rounded-md p-6 border border-gray-100 space-y-4">
-                    <div className="flex items-center mb-2">
-                      <Lightbulb className="h-5 w-5 mr-2 text-indigo-500" />
-                      <h3 className="text-lg font-medium">Feature Requests</h3>
-                    </div>
-                    <ul className="space-y-2">
-                      {transcriptionRecord.analysisData.feature_requests && transcriptionRecord.analysisData.feature_requests.map((feature: { feature: string; description: string }, index: number) => (
-                        <li key={index} className="flex items-start">
-                          <div className="h-5 w-5 rounded-full bg-indigo-100 text-indigo-800 flex items-center justify-center mr-2 flex-shrink-0 mt-0.5">
-                            {index + 1}
-                          </div>
-                          <p className="text-gray-700">{feature.feature}: {feature.description}</p>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                </div>
-              ) : (
-                <div className="flex flex-col items-center justify-center p-8 bg-white rounded-md border border-gray-100">
-                  <AlertCircle className="h-12 w-12 text-amber-500 mb-4" />
-                  <h3 className="text-lg font-medium text-gray-900 mb-2">Analysis Data Not Available</h3>
-                  <p className="text-gray-600 text-center max-w-md mb-4">
-                    The analysis data is missing or hasn't been generated yet. Try clicking the "Analyze" button to generate insights for this transcription.
-                  </p>
-                  <Button 
-                    onClick={() => transcriptionRecord && requestAnalysis(transcriptionRecord.id)}
-                    disabled={isAnalyzing || !transcriptionRecord}
-                    className="bg-indigo-600 hover:bg-indigo-700 text-white"
-                  >
-                    {isAnalyzing ? (
-                      <>
-                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                        Analyzing...
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="h-4 w-4 mr-2" />
-                        Analyze Transcription
-                      </>
-                    )}
-                  </Button>
-                </div>
-              )}
+                );
+              })()}
             </TabsContent>
           </Tabs>
         </div>
