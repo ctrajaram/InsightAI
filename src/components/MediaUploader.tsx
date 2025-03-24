@@ -836,119 +836,112 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
             </TabsContent>
 
             <TabsContent value="analysis" className="pt-4">
-              {(() => {
-                // Use an IIFE to better handle conditional rendering
-                if (isAnalyzing) {
-                  return (
-                    <div className="flex flex-col items-center justify-center p-8 text-amber-600">
-                      <Loader2 className="h-8 w-8 animate-spin mb-4" />
-                      <p>Generating analysis...</p>
+              {transcriptionRecord?.analysisStatus === 'processing' || isAnalyzing ? (
+                <div className="flex flex-col items-center justify-center p-8 text-amber-600">
+                  <Loader2 className="h-8 w-8 animate-spin mb-4" />
+                  <p>Generating analysis...</p>
+                </div>
+              ) : transcriptionRecord?.analysisData ? (
+                <div className="space-y-6">
+                  <div className="bg-white rounded-md p-6 border border-gray-100 space-y-4">
+                    <div className="flex items-center mb-2">
+                      <Heart className="h-5 w-5 mr-2 text-rose-500" />
+                      <h3 className="text-lg font-medium">Customer Sentiment</h3>
                     </div>
-                  );
-                }
-
-                if (!transcriptionRecord?.analysisData) {
-                  return (
-                    <div className="p-6 text-center text-gray-500">
-                      <FileQuestion className="h-12 w-12 mx-auto mb-4 text-gray-400" />
-                      <p className="mb-4">No analysis available yet</p>
-                      <Button 
-                        onClick={() => transcriptionRecord?.id && requestAnalysis(transcriptionRecord.id)}
-                        disabled={isAnalyzing || !transcriptionRecord?.id}
-                        className="bg-indigo-600 hover:bg-indigo-700"
-                      >
-                        <BarChart className="mr-2 h-4 w-4" />
-                        Generate Analysis
-                      </Button>
+                    
+                    <div className="flex flex-col gap-2">
+                      {(() => {
+                        // Using IIFE for better type handling
+                        const sentimentData = transcriptionRecord.analysisData?.sentiment;
+                        
+                        if (!sentimentData) {
+                          return <span className="text-gray-500">No sentiment data available</span>;
+                        }
+                        
+                        const sentimentString = String(sentimentData).toLowerCase();
+                        
+                        let bgColorClass = 'bg-gray-100 text-gray-800';
+                        if (sentimentString.includes('positive')) {
+                          bgColorClass = 'bg-green-100 text-green-800';
+                        } else if (sentimentString.includes('neutral')) {
+                          bgColorClass = 'bg-blue-100 text-blue-800';
+                        } else if (sentimentString.includes('negative')) {
+                          bgColorClass = 'bg-red-100 text-red-800';
+                        }
+                        
+                        return (
+                          <Badge className={`text-sm py-1 px-3 rounded-full ${bgColorClass}`}>
+                            {String(sentimentData)}
+                          </Badge>
+                        );
+                      })()}
                     </div>
-                  );
-                }
-
-                // If we have analysis data, render it
-                const { analysisData } = transcriptionRecord;
-                
-                return (
-                  <div className="space-y-6">
-                    <div className="bg-white rounded-md p-6 border border-gray-100 space-y-4">
-                      <div className="flex items-center mb-2">
-                        <Heart className="h-5 w-5 mr-2 text-rose-500" />
-                        <h3 className="text-lg font-medium">Customer Sentiment</h3>
-                      </div>
-                      
-                      <div className="flex flex-col gap-2">
-                        {(() => {
-                          // Using IIFE for better type handling
-                          const sentimentData = analysisData?.sentiment;
-                          
-                          if (!sentimentData) {
-                            return <span className="text-gray-500">No sentiment data available</span>;
-                          }
-                          
-                          const sentimentString = String(sentimentData).toLowerCase();
-                          
-                          let bgColorClass = 'bg-gray-100 text-gray-800';
-                          if (sentimentString.includes('positive')) {
-                            bgColorClass = 'bg-green-100 text-green-800';
-                          } else if (sentimentString.includes('neutral')) {
-                            bgColorClass = 'bg-blue-100 text-blue-800';
-                          } else if (sentimentString.includes('negative')) {
-                            bgColorClass = 'bg-red-100 text-red-800';
-                          }
-                          
-                          return (
-                            <Badge className={`text-sm py-1 px-3 rounded-full ${bgColorClass}`}>
-                              {String(sentimentData)}
-                            </Badge>
-                          );
-                        })()}
-                      </div>
-                      
-                      {analysisData?.sentiment_explanation && (
-                        <p className="text-gray-700 mt-2">{analysisData.sentiment_explanation}</p>
-                      )}
-                    </div>
-
-                    {analysisData?.pain_points && analysisData.pain_points.length > 0 && (
-                      <div className="bg-white rounded-md p-6 border border-gray-100 space-y-4">
-                        <div className="flex items-center mb-2">
-                          <AlertOctagon className="h-5 w-5 mr-2 text-amber-500" />
-                          <h3 className="text-lg font-medium">Pain Points</h3>
-                        </div>
-                        <ul className="space-y-2">
-                          {analysisData.pain_points.map((point: { issue: string; description: string }, index: number) => (
-                            <li key={index} className="flex items-start">
-                              <div className="h-5 w-5 rounded-full bg-amber-100 text-amber-800 flex items-center justify-center mr-2 flex-shrink-0 mt-0.5">
-                                {index + 1}
-                              </div>
-                              <p className="text-gray-700">{point.issue}: {point.description}</p>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-
-                    {/* Feature requests section */}
-                    {analysisData?.feature_requests && analysisData.feature_requests.length > 0 && (
-                      <div className="bg-white rounded-md p-6 border border-gray-100 space-y-4">
-                        <div className="flex items-center mb-2">
-                          <Lightbulb className="h-5 w-5 mr-2 text-blue-500" />
-                          <h3 className="text-lg font-medium">Feature Requests</h3>
-                        </div>
-                        <ul className="space-y-2">
-                          {analysisData.feature_requests.map((feature: { feature: string; description: string }, index: number) => (
-                            <li key={index} className="flex items-start">
-                              <div className="h-5 w-5 rounded-full bg-blue-100 text-blue-800 flex items-center justify-center mr-2 flex-shrink-0 mt-0.5">
-                                {index + 1}
-                              </div>
-                              <p className="text-gray-700">{feature.feature}: {feature.description}</p>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
+                    
+                    {transcriptionRecord.analysisData?.sentiment_explanation && (
+                      <p className="text-gray-700 mt-2">{transcriptionRecord.analysisData.sentiment_explanation}</p>
                     )}
                   </div>
-                );
-              })()}
+
+                  {transcriptionRecord.analysisData?.pain_points && transcriptionRecord.analysisData.pain_points.length > 0 && (
+                    <div className="bg-white rounded-md p-6 border border-gray-100 space-y-4">
+                      <div className="flex items-center mb-2">
+                        <AlertOctagon className="h-5 w-5 mr-2 text-amber-500" />
+                        <h3 className="text-lg font-medium">Pain Points</h3>
+                      </div>
+                      <ul className="space-y-2">
+                        {transcriptionRecord.analysisData.pain_points.map((point: { issue: string; description: string }, index: number) => (
+                          <li key={index} className="flex items-start">
+                            <div className="h-5 w-5 rounded-full bg-amber-100 text-amber-800 flex items-center justify-center mr-2 flex-shrink-0 mt-0.5">
+                              {index + 1}
+                            </div>
+                            <p className="text-gray-700">{point.issue}: {point.description}</p>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {/* Feature requests section */}
+                  {transcriptionRecord.analysisData?.feature_requests && transcriptionRecord.analysisData.feature_requests.length > 0 && (
+                    <div className="bg-white rounded-md p-6 border border-gray-100 space-y-4">
+                      <div className="flex items-center mb-2">
+                        <Lightbulb className="h-5 w-5 mr-2 text-blue-500" />
+                        <h3 className="text-lg font-medium">Feature Requests</h3>
+                      </div>
+                      <ul className="space-y-2">
+                        {transcriptionRecord.analysisData.feature_requests.map((feature: { feature: string; description: string }, index: number) => (
+                          <li key={index} className="flex items-start">
+                            <div className="h-5 w-5 rounded-full bg-blue-100 text-blue-800 flex items-center justify-center mr-2 flex-shrink-0 mt-0.5">
+                              {index + 1}
+                            </div>
+                            <p className="text-gray-700">{feature.feature}: {feature.description}</p>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                // If no analysis data is available yet, start it automatically
+                <div className="flex flex-col items-center justify-center p-8 text-amber-600">
+                  <Loader2 className="h-8 w-8 animate-spin mb-4" />
+                  <p>Starting analysis automatically...</p>
+                  {transcriptionRecord?.id && !isAnalyzing && (
+                    <script dangerouslySetInnerHTML={{ 
+                      __html: `setTimeout(() => {
+                        try {
+                          // This will trigger the analysis to start automatically
+                          window.dispatchEvent(new CustomEvent('start-analysis', { 
+                            detail: { transcriptionId: "${transcriptionRecord.id}" } 
+                          }));
+                        } catch(e) {
+                          console.error("Failed to auto-start analysis:", e);
+                        }
+                      }, 500)`
+                    }} />
+                  )}
+                </div>
+              )}
             </TabsContent>
           </Tabs>
         </div>
@@ -1104,9 +1097,35 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
     };
   }, [supabase]);
 
-  // Cleanup function for component unmount
   useEffect(() => {
-    // Return cleanup function to handle component unmounting
+    // Add event listener for automatic analysis
+    const handleStartAnalysis = (event: CustomEvent<{ transcriptionId: string }>) => {
+      if (event.detail?.transcriptionId) {
+        requestAnalysis(event.detail.transcriptionId);
+      }
+    };
+
+    window.addEventListener('start-analysis', handleStartAnalysis as EventListener);
+
+    return () => {
+      window.removeEventListener('start-analysis', handleStartAnalysis as EventListener);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (transcriptionRecord?.id && transcriptionRecord?.transcriptionText && !transcriptionRecord?.summaryText && !isSummarizing) {
+      console.log('Auto-generating summary for transcription:', transcriptionRecord.id);
+      generateSummaryForTranscription(transcriptionRecord.id, transcriptionRecord.transcriptionText);
+    }
+    
+    if (transcriptionRecord?.id && transcriptionRecord?.transcriptionText && !transcriptionRecord?.analysisData && !isAnalyzing) {
+      console.log('Auto-generating analysis for transcription:', transcriptionRecord.id);
+      setTimeout(() => requestAnalysis(transcriptionRecord.id), 1000); // Small delay to avoid race conditions
+    }
+  }, [transcriptionRecord?.id, transcriptionRecord?.transcriptionText]);
+
+  useEffect(() => {
+    // Cleanup function for component unmount
     return () => {
       // Cancel any in-progress operations if component unmounts
       setIsUploading(false);
