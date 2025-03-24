@@ -516,21 +516,21 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       setIsAnalyzing(true);
       
       // Check if we already have a session, if not, try to get one
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) {
+      const { data } = await supabase.auth.getSession();
+      if (!data?.session) {
         console.error('No active session found');
         setIsAnalyzing(false);
         return;
       }
 
-      const response = await fetch('/api/analyze-transcript', {
+      const response = await fetch('/api/analyze', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
           transcriptionId,
-          accessToken: session?.access_token || '',
+          accessToken: data.session?.access_token || '',
         }),
       });
 
@@ -542,15 +542,17 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
         setAnalysisCompleted(true);
         
         // Update the transcription record with the analysis results
-        setTranscriptionRecord(prev => {
-          if (!prev) return prev;
+        setTranscriptionRecord((prev) => {
+          if (!prev) return null;
           
-          // Store in localStorage to maintain state during page refreshes
-          const updatedRecord = {
+          // Create a properly typed updated record
+          const updatedRecord: TranscriptionRecord = {
             ...prev,
             analysisData: result.analysisData || {},
-            analysisStatus: 'completed'
+            analysisStatus: 'completed' as const
           };
+          
+          // Store in localStorage to maintain state during page refreshes
           localStorage.setItem('transcriptionRecord', JSON.stringify(updatedRecord));
           
           return updatedRecord;
@@ -677,25 +679,10 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
                 </div>
               )}
               
-              {transcriptionRecord && !transcriptionRecord.summaryText && (
-                <div className="mt-4 flex justify-end">
-                  <Button 
-                    onClick={() => generateSummaryForTranscription(transcriptionRecord.id, transcriptionRecord.transcriptionText)}
-                    disabled={isSummarizing}
-                    className="flex items-center bg-indigo-600 hover:bg-indigo-700"
-                  >
-                    {isSummarizing ? (
-                      <>
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Generating...
-                      </>
-                    ) : (
-                      <>
-                        <FileText className="mr-2 h-4 w-4" />
-                        Generate Summary
-                      </>
-                    )}
-                  </Button>
+              {transcriptionRecord?.transcriptionText && !transcriptionRecord.summaryText && isSummarizing && (
+                <div className="bg-amber-50 border border-amber-200 text-amber-800 p-4 mb-4 rounded-md flex items-center">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span>Generating summary...</span>
                 </div>
               )}
             </TabsContent>
