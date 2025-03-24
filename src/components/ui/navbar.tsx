@@ -47,7 +47,6 @@ export function Navbar() {
 
   const menuLinks = [
     { href: '/', label: 'Home', icon: <Home className="h-4 w-4 mr-2" /> },
-    { href: '/dashboard', label: 'Dashboard', icon: <BarChart2 className="h-4 w-4 mr-2" /> },
     { href: '/transcribe', label: 'Transcribe', icon: <FileText className="h-4 w-4 mr-2" /> },
   ];
 
