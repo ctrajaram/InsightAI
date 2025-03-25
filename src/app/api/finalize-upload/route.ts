@@ -164,7 +164,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         success: true,
         message: 'File upload completed successfully',
-        mediaUrl: publicUrl,
+        path: filePath,
+        url: publicUrl,
+        mediaUrl: publicUrl, // Keep for backwards compatibility
+        filename: fileName,
+        contentType: fileType,
+        size: fileBuffer.length,
         transcriptionId
       });
     } catch (error: any) {
