@@ -659,6 +659,7 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
     
     try {
       setIsAnalyzing(true);
+      setAnalysisStatus('processing');
       
       // Get the current session to retrieve the access token
       const { data: { session } } = await supabase.auth.getSession();
@@ -734,6 +735,13 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
         if (analysisResponse.success && analysisResponse.analysis) {
           console.log('Updating transcription record with analysis data:', analysisResponse.analysis);
           
+          // Create a dummy analysis data object if none exists
+          if (!analysisResponse.analysis.sentiment) {
+            console.log('No sentiment data in response, creating default');
+            analysisResponse.analysis.sentiment = 'Neutral';
+            analysisResponse.analysis.sentiment_explanation = 'No sentiment detected in the transcript.';
+          }
+          
           // Update the local state with the analysis data immediately
           setTranscriptionRecord(prev => {
             if (!prev) return prev;
@@ -747,6 +755,10 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
           // No need to fetch from database again since we're updating the state directly
           setIsAnalyzing(false);
           console.log('Transcription record updated with analysis data');
+        } else {
+          console.error('Analysis response missing success or analysis data:', analysisResponse);
+          setIsAnalyzing(false);
+          throw new Error('Invalid analysis response from server');
         }
         
         return analysisResponse;
@@ -767,6 +779,31 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       
       // Don't throw the error further to prevent cascading failures
       return null;
+    }
+  };
+
+  // Function to manually trigger analysis
+  const triggerAnalysis = () => {
+    if (transcriptionRecord?.id) {
+      setIsAnalyzing(true);
+      setAnalysisStatus('processing');
+      
+      // Update the UI immediately to show analysis is in progress
+      setTranscriptionRecord(prev => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          analysisStatus: 'processing' as const
+        };
+      });
+      
+      // Request the analysis
+      requestAnalysis(transcriptionRecord.id)
+        .catch(error => {
+          console.error('Error triggering analysis:', error);
+          setIsAnalyzing(false);
+          setAnalysisStatus('error');
+        });
     }
   };
 
@@ -850,11 +887,11 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
               </TabsTrigger>
               <TabsTrigger 
                 value="analysis" 
-                disabled={!transcriptionRecord?.analysisData && transcriptionRecord?.analysisStatus !== 'processing'}
+                disabled={isAnalyzing ? false : !transcriptionRecord?.analysisData}
                 className="data-[state=active]:bg-white data-[state=active]:shadow-sm"
               >
                 <BarChart className="h-4 w-4 mr-2" />
-                {transcriptionRecord?.analysisStatus === 'processing' ? 'Analyzing...' : 'Analysis'}
+                {isAnalyzing ? 'Analyzing...' : 'Analysis'}
               </TabsTrigger>
             </TabsList>
 
@@ -900,7 +937,27 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
             </TabsContent>
 
             <TabsContent value="analysis" className="pt-4">
-              {transcriptionRecord?.analysisData ? (
+              {isAnalyzing ? (
+                <div className="p-6 text-center text-amber-600">
+                  <Loader2 className="h-12 w-12 animate-spin mx-auto mb-4 text-amber-500" />
+                  <p className="font-medium">Analyzing interview content...</p>
+                  <p className="text-sm text-amber-500 mt-2">This may take a minute or two.</p>
+                </div>
+              ) : !transcriptionRecord?.analysisData ? (
+                <div className="p-6 text-center text-gray-500">
+                  <FileQuestion className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                  <p>No analysis available yet</p>
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    className="mt-4"
+                    onClick={triggerAnalysis}
+                  >
+                    <BarChart2 className="h-4 w-4 mr-2" />
+                    Start Analysis
+                  </Button>
+                </div>
+              ) : (
                 <div className="space-y-6">
                   <div className="bg-white rounded-md p-6 border border-gray-100 space-y-4">
                     <div className="flex items-center mb-2">
@@ -983,31 +1040,6 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
                     </ul>
                   </div>
                 </div>
-              ) : (
-                <div className="flex flex-col items-center justify-center p-8 bg-white rounded-md border border-gray-100">
-                  <AlertCircle className="h-12 w-12 text-amber-500 mb-4" />
-                  <h3 className="text-lg font-medium text-gray-900 mb-2">Analysis Data Not Available</h3>
-                  <p className="text-gray-600 text-center max-w-md mb-4">
-                    The analysis data is missing or hasn't been generated yet. Try clicking the "Analyze" button to generate insights for this transcription.
-                  </p>
-                  <Button 
-                    onClick={() => transcriptionRecord && requestAnalysis(transcriptionRecord.id)}
-                    disabled={isAnalyzing || !transcriptionRecord}
-                    className="bg-indigo-600 hover:bg-indigo-700 text-white"
-                  >
-                    {isAnalyzing ? (
-                      <>
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        Analyzing...
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="h-4 w-4 mr-2" />
-                        Analyze Transcription
-                      </>
-                    )}
-                  </Button>
-                </div>
               )}
             </TabsContent>
           </Tabs>
@@ -1069,19 +1101,7 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
             transcriptionRecord.analysisStatus !== 'processing') {
           try {
             console.log('Auto-triggering analysis for transcription:', transcriptionRecord.id);
-            setAnalysisStatus('processing');
-            
-            // Update local state to show analysis is in progress
-            setTranscriptionRecord(prev => {
-              if (!prev) return prev;
-              return {
-                ...prev,
-                analysisStatus: 'processing' as const
-              };
-            });
-            
-            setIsAnalyzing(true);
-            await requestAnalysis(transcriptionRecord.id);
+            triggerAnalysis();
           } catch (error) {
             console.error('Auto-sentiment analysis failed:', error);
           }

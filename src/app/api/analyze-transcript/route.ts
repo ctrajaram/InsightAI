@@ -425,7 +425,8 @@ export async function POST(request: NextRequest) {
       // Return the success response with analysis
       return NextResponse.json({
         success: true,
-        analysis: analysisData
+        analysis: analysisData,
+        message: 'Analysis completed successfully'
       });
       
     } catch (openaiError: any) {

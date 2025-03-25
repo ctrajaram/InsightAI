@@ -285,7 +285,6 @@ export async function POST(request: NextRequest) {
             .update({
               summary_status: 'completed',
               summary_text: summaryData.text,
-              summary_data: summaryData,
               updated_at: new Date().toISOString()
             })
             .eq('id', transcriptionId);
