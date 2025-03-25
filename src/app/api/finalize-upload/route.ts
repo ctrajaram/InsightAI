@@ -95,7 +95,9 @@ export async function POST(request: NextRequest) {
     
     // Check each chunk exists in storage
     for (let i = 0; i < totalChunks; i++) {
-      const chunkPath = `chunks/${uploadId}/chunk-${i}`;
+      const chunkIndex = i;
+      // Use the same path format as in upload-chunk
+      const chunkPath = `${userId}/uploads/${uploadId}/chunk-${chunkIndex}`;
       
       // Check if the chunk exists in storage
       const { data: chunkData, error: chunkError } = await supabase.storage
@@ -136,7 +138,7 @@ export async function POST(request: NextRequest) {
     
     // Reassemble the file from chunks
     for (let i = 0; i < totalChunks; i++) {
-      const chunkPath = `chunks/${uploadId}/chunk-${i}`;
+      const chunkPath = `${userId}/uploads/${uploadId}/chunk-${i}`;
       
       // Download the chunk from storage
       const { data: chunkData, error: chunkError } = await supabase.storage
@@ -232,7 +234,7 @@ export async function POST(request: NextRequest) {
     // Clean up the temporary chunks (optional, can be done asynchronously)
     try {
       for (let i = 0; i < totalChunks; i++) {
-        const chunkPath = `chunks/${uploadId}/chunk-${i}`;
+        const chunkPath = `${userId}/uploads/${uploadId}/chunk-${i}`;
         
         supabase.storage
           .from(bucketName)
@@ -247,7 +249,7 @@ export async function POST(request: NextRequest) {
       // Also remove the metadata file
       supabase.storage
         .from(bucketName)
-        .remove([`chunks/${uploadId}/metadata.json`])
+        .remove([`${userId}/uploads/${uploadId}/metadata.json`])
         .then(({ error }) => {
           if (error) {
             console.error('Error removing metadata file:', error);

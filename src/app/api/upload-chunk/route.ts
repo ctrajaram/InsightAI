@@ -117,17 +117,19 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Create storage path for chunks
-    const chunkStoragePath = `chunks/${uploadId}/chunk-${chunkIndex}`;
+    // Use a fixed bucket name - we know this one exists and is set up properly
+    const bucketName = 'media-files'; // This is the bucket name defined in media-storage.ts
+    
+    console.log(`Using fixed bucket: ${bucketName}`);
+    
+    // Create a storage path that follows Supabase conventions
+    // Store the chunks in the user's folder to avoid permission issues
+    // Important: Start with the user ID to make RLS policies work
+    const chunkStoragePath = `${userId}/uploads/${uploadId}/chunk-${chunkIndex}`;
     
     try {
       // Convert the file to buffer
       const buffer = Buffer.from(await file.arrayBuffer());
-      
-      // Use a fixed bucket name - we know this one exists and is set up properly
-      const bucketName = 'media-files'; // This is the bucket name defined in media-storage.ts
-      
-      console.log(`Using fixed bucket: ${bucketName}`);
       
       // Upload the chunk directly to Supabase Storage
       const { data: uploadData, error: uploadError } = await supabase.storage
@@ -153,18 +155,17 @@ export async function POST(request: NextRequest) {
           const metadata = {
             fileName,
             fileType,
+            fileSize,
             totalChunks,
             uploadId,
-            fileSize,
-            transcriptionId: transcriptionId || null,
-            userId,
             createdAt: new Date().toISOString(),
+            transcriptionId
           };
           
           // Store metadata in Supabase Storage
           const { data: metaData, error: metaError } = await supabase.storage
             .from(bucketName)
-            .upload(`chunks/${uploadId}/metadata.json`, JSON.stringify(metadata, null, 2), {
+            .upload(`${userId}/uploads/${uploadId}/metadata.json`, JSON.stringify(metadata, null, 2), {
               contentType: 'application/json',
               upsert: true,
             });
@@ -173,7 +174,7 @@ export async function POST(request: NextRequest) {
             console.error('Error storing metadata:', metaError);
             // Non-fatal, continue even if metadata upload fails
           } else {
-            console.log(`Created metadata at chunks/${uploadId}/metadata.json`);
+            console.log(`Created metadata at ${userId}/uploads/${uploadId}/metadata.json`);
           }
         } catch (metaError: any) {
           console.error(`Error creating metadata:`, metaError);
