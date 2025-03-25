@@ -30,18 +30,17 @@ if (!fs.existsSync(TEMP_DIR)) {
 
 export async function POST(request: NextRequest) {
   try {
-    // Get the authorization header
+    // Get the bearer token from the request headers
     const authHeader = request.headers.get('Authorization');
-    
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      console.error('Missing or invalid Authorization header');
       return NextResponse.json(
-        { success: false, error: 'Authentication required' },
+        { success: false, error: 'Authentication required. Please sign in again.' },
         { status: 401 }
       );
     }
     
-    // Extract the token
-    const token = authHeader.split(' ')[1];
+    const token = authHeader.substring(7); // Remove 'Bearer ' prefix
     
     // Verify the token with Supabase
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -57,6 +56,8 @@ export async function POST(request: NextRequest) {
     
     // Create a client for authentication
     const supabase = createClient(supabaseUrl, supabaseKey);
+    
+    // Verify the user's token
     const { data: { user }, error: authError } = await supabase.auth.getUser(token);
     
     if (authError || !user) {
@@ -67,31 +68,9 @@ export async function POST(request: NextRequest) {
       );
     }
     
-    // For operations that need to bypass RLS, try to use service role if available
-    // But fall back to the regular client if not available
-    let supabaseAdmin = supabase;
-    const serviceKey = process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-    if (serviceKey) {
-      supabaseAdmin = createClient(supabaseUrl, serviceKey, {
-        auth: {
-          autoRefreshToken: false,
-          persistSession: false
-        }
-      });
-      
-      // Set auth context to the user to help with RLS policies
-      const { error: authError } = await supabaseAdmin.auth.setSession({
-        access_token: token,
-        refresh_token: ''
-      });
-      
-      if (authError) {
-        console.warn('Failed to set auth context:', authError.message);
-      }
-    } else {
-      console.warn('SUPABASE_SERVICE_KEY not found, using regular client which may have RLS restrictions');
-    }
-    
+    // Now the user is verified, we can use their ID
+    const userId = user.id;
+
     // Parse the multipart form data
     const formData = await request.formData();
     const file = formData.get('file') as File;
@@ -111,9 +90,6 @@ export async function POST(request: NextRequest) {
       );
     }
     
-    // Use the authenticated user's ID instead of relying on the form data
-    const userId = user.id;
-
     // Create a directory for this upload if it doesn't exist
     const uploadDir = path.join(TEMP_DIR, uploadId);
     if (!fs.existsSync(uploadDir)) {

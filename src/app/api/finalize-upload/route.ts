@@ -26,18 +26,17 @@ const TEMP_DIR = path.join(os.tmpdir(), 'insight-ai-uploads');
 
 export async function POST(request: NextRequest) {
   try {
-    // Get the authorization header
+    // Get the bearer token from the request headers
     const authHeader = request.headers.get('Authorization');
-    
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      console.error('Missing or invalid Authorization header');
       return NextResponse.json(
-        { success: false, error: 'Authentication required' },
+        { success: false, error: 'Authentication required. Please sign in again.' },
         { status: 401 }
       );
     }
     
-    // Extract the token
-    const token = authHeader.split(' ')[1];
+    const token = authHeader.substring(7); // Remove 'Bearer ' prefix
     
     // Verify the token with Supabase
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -51,8 +50,10 @@ export async function POST(request: NextRequest) {
       );
     }
     
-    // Create two Supabase clients - one for auth and one with service role for storage operations
+    // Create a client for authentication
     const supabase = createClient(supabaseUrl, supabaseKey);
+    
+    // Verify the user's token
     const { data: { user }, error: authError } = await supabase.auth.getUser(token);
     
     if (authError || !user) {
@@ -63,31 +64,9 @@ export async function POST(request: NextRequest) {
       );
     }
     
-    // For operations that need to bypass RLS, try to use service role if available
-    // But fall back to the regular client if not available
-    let supabaseAdmin = supabase;
-    const serviceKey = process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-    if (serviceKey) {
-      supabaseAdmin = createClient(supabaseUrl, serviceKey, {
-        auth: {
-          autoRefreshToken: false,
-          persistSession: false
-        }
-      });
-      
-      // Set auth context to the user to help with RLS policies
-      const { error: authError } = await supabaseAdmin.auth.setSession({
-        access_token: token,
-        refresh_token: ''
-      });
-      
-      if (authError) {
-        console.warn('Failed to set auth context:', authError.message);
-      }
-    } else {
-      console.warn('SUPABASE_SERVICE_KEY not found, using regular client which may have RLS restrictions');
-    }
-    
+    // Now the user is verified, we can use their ID
+    const userId = user.id;
+
     // Parse the request body
     const body = await request.json();
     const { uploadId, fileName, fileType, totalChunks, transcriptionId } = body;
@@ -141,9 +120,6 @@ export async function POST(request: NextRequest) {
     // Read the reassembled file
     const fileBuffer = fs.readFileSync(tempFilePath);
 
-    // Use the authenticated user's ID
-    const userId = user.id;
-
     // Upload the reassembled file to Supabase Storage using direct REST API
     // This approach bypasses RLS policies completely
     const filePath = `${userId}/${Date.now()}_${fileName}`;
@@ -151,10 +127,13 @@ export async function POST(request: NextRequest) {
     
     try {
       // Upload file using fetch to bypass RLS
+      // Use service key for authorization if available, otherwise use the user's token
+      const authToken = process.env.SUPABASE_SERVICE_KEY || token;
+      
       const uploadResponse = await fetch(storageEndpoint, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${supabaseKey}`,
+          'Authorization': `Bearer ${authToken}`,
           'Content-Type': fileType,
           'x-upsert': 'false'
         },
