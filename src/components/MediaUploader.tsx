@@ -3,6 +3,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Card, CardContent, CardFooter, CardHeader, CardTitle, CardDescription } from './ui/card';
 import { Button } from './ui/button';
+import { Label } from './ui/label';
+import { Progress } from './ui/progress';
+import { TranscriptChat } from './TranscriptChat';
+import { updateAnalysisData, formatAnalysisDataForDb } from '@/utils/analysis';
+import useSupabase from '@/hooks/useSupabase';
 import { 
   AlertCircle, 
   AlertTriangle, 
@@ -30,9 +35,14 @@ import {
   Heart,
   Badge,
   AlertOctagon,
-  Lightbulb
+  Lightbulb,
+  CircleSlash,
+  SmilePlus,
+  Frown,
+  CircleDot,
+  Hash,
+  KeyRound
 } from 'lucide-react';
-import useSupabase from '@/hooks/useSupabase';
 import { 
   TranscriptionRecord, 
   uploadMediaFile,
@@ -41,9 +51,6 @@ import {
 } from '@/lib/media-storage';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import Link from 'next/link';
-import { Label } from './ui/label';
-import { Progress } from './ui/progress';
-import { TranscriptChat } from './TranscriptChat';
 
 export function MediaUploader({ onComplete }: { onComplete?: (transcription: TranscriptionRecord) => void }) {
   const { supabase, user } = useSupabase();
@@ -61,6 +68,8 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
   const [currentTranscriptionId, setCurrentTranscriptionId] = useState<string | null>(null);
   const [updateMessage, setUpdateMessage] = useState<string>('');
   const [showAuthPrompt, setShowAuthPrompt] = useState(false);
+  const [loadingState, setLoadingState] = useState<'idle' | 'analyzing' | 'saving-analysis'>('idle');
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Use a ref to track which transcriptions we've already attempted to analyze
   const analysisAttempts = useRef<Set<string>>(new Set());
@@ -745,11 +754,31 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
           // Update the local state with the analysis data immediately
           setTranscriptionRecord(prev => {
             if (!prev) return prev;
-            return {
+            const updatedRecord = {
               ...prev,
               analysisStatus: 'completed' as const,
               analysisData: analysisResponse.analysis
             };
+            
+            // Automatically save the analysis data to the database
+            console.log('Auto-saving analysis data to database...');
+            // Use setTimeout to ensure state update completes first
+            setTimeout(() => {
+              saveAnalysisData(transcriptionId, analysisResponse.analysis)
+                .then(success => {
+                  if (success) {
+                    console.log('Analysis data auto-saved successfully');
+                    setUpdateMessage('Analysis data auto-saved successfully');
+                  } else {
+                    console.warn('Failed to auto-save analysis data');
+                  }
+                })
+                .catch(saveError => {
+                  console.error('Error auto-saving analysis data:', saveError);
+                });
+            }, 100);
+            
+            return updatedRecord;
           });
           
           // No need to fetch from database again since we're updating the state directly
@@ -799,6 +828,28 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       
       // Request the analysis
       requestAnalysis(transcriptionRecord.id)
+        .then(analysisResponse => {
+          console.log('Analysis completed:', analysisResponse);
+          
+          // Auto-save the analysis data after manually triggered analysis
+          if (analysisResponse && analysisResponse.analysis) {
+            console.log('Auto-saving analysis data after manual trigger...');
+            
+            // Use a slight delay to ensure state updates have completed
+            setTimeout(() => {
+              saveAnalysisData(transcriptionRecord.id, analysisResponse.analysis)
+                .then(success => {
+                  if (success) {
+                    console.log('Analysis data auto-saved successfully');
+                    setUpdateMessage('Analysis data auto-saved successfully');
+                  }
+                })
+                .catch(saveError => {
+                  console.error('Error auto-saving analysis data:', saveError);
+                });
+            }, 100);
+          }
+        })
         .catch(error => {
           console.error('Error triggering analysis:', error);
           setIsAnalyzing(false);
@@ -950,8 +1001,8 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
                   <Button 
                     variant="outline" 
                     size="sm" 
-                    className="mt-4"
                     onClick={triggerAnalysis}
+                    className="mt-4"
                   >
                     <BarChart2 className="h-4 w-4 mr-2" />
                     Start Analysis
@@ -1011,16 +1062,39 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
                       <AlertOctagon className="h-5 w-5 mr-2 text-amber-500" />
                       <h3 className="text-lg font-medium">Pain Points</h3>
                     </div>
-                    <ul className="space-y-2">
-                      {transcriptionRecord.analysisData.pain_points && transcriptionRecord.analysisData.pain_points.map((point: { issue: string; description: string }, index: number) => (
-                        <li key={index} className="flex items-start">
-                          <div className="h-5 w-5 rounded-full bg-amber-100 text-amber-800 flex items-center justify-center mr-2 flex-shrink-0 mt-0.5">
-                            {index + 1}
-                          </div>
-                          <p className="text-gray-700">{point.issue}: {point.description}</p>
-                        </li>
-                      ))}
-                    </ul>
+                    {Array.isArray(transcriptionRecord.analysisData.pain_points) && transcriptionRecord.analysisData.pain_points.length > 0 ? (
+                      <ul className="space-y-2">
+                        {transcriptionRecord.analysisData.pain_points.map((point, index) => (
+                          <li key={index} className="text-sm">
+                            {typeof point === 'string' ? 
+                              <div className="flex items-start">
+                                <span className="inline-flex items-center justify-center h-5 w-5 rounded-full bg-amber-100 text-amber-800 text-xs font-medium mr-2">{index + 1}</span>
+                                <span>{point}</span>
+                              </div> : 
+                              (point && typeof point === 'object' && 'issue' in point ? 
+                                <div>
+                                  <div className="flex items-start">
+                                    <span className="inline-flex items-center justify-center h-5 w-5 rounded-full bg-amber-100 text-amber-800 text-xs font-medium mr-2">{index + 1}</span>
+                                    <strong>{point.issue}</strong>
+                                  </div>
+                                  <p className="ml-7">{point.description}</p>
+                                  {Array.isArray(point.quotes) && point.quotes.length > 0 && (
+                                    <blockquote className="ml-7 pl-2 border-l-2 border-gray-300 mt-1 text-xs italic text-gray-600">
+                                      "{point.quotes[0]}"
+                                    </blockquote>
+                                  )}
+                                </div> : 
+                                <div className="flex items-start">
+                                  <span className="inline-flex items-center justify-center h-5 w-5 rounded-full bg-amber-100 text-amber-800 text-xs font-medium mr-2">{index + 1}</span>
+                                  <span>{JSON.stringify(point)}</span>
+                                </div>
+                              )}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">No pain points identified.</p>
+                    )}
                   </div>
 
                   <div className="bg-white rounded-md p-6 border border-gray-100 space-y-4">
@@ -1028,22 +1102,245 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
                       <Lightbulb className="h-5 w-5 mr-2 text-indigo-500" />
                       <h3 className="text-lg font-medium">Feature Requests</h3>
                     </div>
-                    <ul className="space-y-2">
-                      {transcriptionRecord.analysisData.feature_requests && transcriptionRecord.analysisData.feature_requests.map((feature: { feature: string; description: string }, index: number) => (
-                        <li key={index} className="flex items-start">
-                          <div className="h-5 w-5 rounded-full bg-indigo-100 text-indigo-800 flex items-center justify-center mr-2 flex-shrink-0 mt-0.5">
-                            {index + 1}
-                          </div>
-                          <p className="text-gray-700">{feature.feature}: {feature.description}</p>
-                        </li>
-                      ))}
-                    </ul>
+                    {Array.isArray(transcriptionRecord.analysisData.feature_requests) && transcriptionRecord.analysisData.feature_requests.length > 0 ? (
+                      <ul className="space-y-2">
+                        {transcriptionRecord.analysisData.feature_requests.map((feature, index) => (
+                          <li key={index} className="text-sm">
+                            {typeof feature === 'string' ? feature : 
+                             (feature && typeof feature === 'object' && 'feature' in feature ? 
+                              <div>
+                                <div className="flex items-start">
+                                  <span className="inline-flex items-center justify-center h-5 w-5 rounded-full bg-indigo-100 text-indigo-800 text-xs font-medium mr-2">{index + 1}</span>
+                                  <strong>{feature.feature}</strong>
+                                </div>
+                                <p className="ml-7">{feature.description}</p>
+                                {Array.isArray(feature.quotes) && feature.quotes.length > 0 && (
+                                  <blockquote className="ml-7 pl-2 border-l-2 border-gray-300 mt-1 text-xs italic text-gray-600">
+                                    "{feature.quotes[0]}"
+                                  </blockquote>
+                                )}
+                              </div> : 
+                              JSON.stringify(feature))}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">No feature requests identified.</p>
+                    )}
                   </div>
+
+                  {(Array.isArray(transcriptionRecord.analysisData.topics) && transcriptionRecord.analysisData.topics.length > 0) || (Array.isArray(transcriptionRecord.analysisData.keyInsights) && transcriptionRecord.analysisData.keyInsights.length > 0) ? (
+                    <div className="border rounded-lg p-4 space-y-2">
+                      {Array.isArray(transcriptionRecord.analysisData.topics) && transcriptionRecord.analysisData.topics.length > 0 && (
+                        <div>
+                          <div className="flex items-center space-x-2">
+                            <Hash className="h-5 w-5 text-blue-500" />
+                            <h3 className="text-lg font-semibold">Topics</h3>
+                          </div>
+                          <div className="flex flex-wrap gap-2 mt-2">
+                            {transcriptionRecord.analysisData.topics.map((topic: string, index: number) => (
+                              <Badge key={index} className="bg-blue-100 text-blue-800 hover:bg-blue-200">{topic}</Badge>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      
+                      {Array.isArray(transcriptionRecord.analysisData.keyInsights) && transcriptionRecord.analysisData.keyInsights.length > 0 && (
+                        <div className="mt-4">
+                          <div className="flex items-center space-x-2">
+                            <KeyRound className="h-5 w-5 text-emerald-500" />
+                            <h3 className="text-lg font-semibold">Key Insights</h3>
+                          </div>
+                          <ul className="space-y-1 mt-2">
+                            {transcriptionRecord.analysisData.keyInsights.map((insight: string, index: number) => (
+                              <li key={index} className="text-sm">{insight}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  ) : null}
                 </div>
               )}
             </TabsContent>
           </Tabs>
         </div>
+      </div>
+    );
+  };
+
+  const renderAnalysisTab = () => {
+    if (isAnalyzing) {
+      return (
+        <div className="flex flex-col items-center justify-center p-8 space-y-4">
+          <Loader2 className="h-8 w-8 animate-spin text-primary" />
+          <p className="text-muted-foreground">Analyzing transcript...</p>
+        </div>
+      );
+    }
+    
+    if (!transcriptionRecord?.analysisData) {
+      return (
+        <div className="flex flex-col items-center justify-center p-8 space-y-4">
+          <AlertCircle className="h-8 w-8 text-muted-foreground" />
+          <p className="text-muted-foreground">No analysis available yet.</p>
+          <Button 
+            variant="outline" 
+            size="sm" 
+            onClick={triggerAnalysis}
+          >
+            <BarChart2 className="h-4 w-4 mr-2" />
+            Start Analysis
+          </Button>
+        </div>
+      );
+    }
+    
+    const { sentiment, sentiment_explanation, pain_points, feature_requests } = transcriptionRecord.analysisData;
+    const otherData = transcriptionRecord.analysisData as any;
+    const topics = Array.isArray(otherData.topics) ? otherData.topics : [];
+    const keyInsights = Array.isArray(otherData.keyInsights) ? otherData.keyInsights : [];
+    
+    // Determine sentiment color
+    let sentimentColor = 'bg-gray-200';
+    let sentimentIcon = <CircleSlash className="h-5 w-5" />;
+    
+    if (sentiment && typeof sentiment === 'string') {
+      const sentimentLower = sentiment.toLowerCase();
+      if (sentimentLower.includes('positive')) {
+        sentimentColor = 'bg-green-200';
+        sentimentIcon = <SmilePlus className="h-5 w-5 text-green-600" />;
+      } else if (sentimentLower.includes('negative')) {
+        sentimentColor = 'bg-red-200';
+        sentimentIcon = <Frown className="h-5 w-5 text-red-600" />;
+      } else if (sentimentLower.includes('neutral')) {
+        sentimentColor = 'bg-blue-200';
+        sentimentIcon = <CircleDot className="h-5 w-5 text-blue-600" />;
+      }
+    }
+    
+    return (
+      <div className="space-y-6 p-4">
+        {/* Sentiment Section */}
+        <div className="border rounded-lg p-4 space-y-2">
+          <div className="flex items-center space-x-2">
+            <Heart className="h-5 w-5 text-red-500" />
+            <h3 className="text-lg font-semibold">Customer Sentiment</h3>
+          </div>
+          <div className="flex items-center space-x-2 mt-2">
+            <div className={`${sentimentColor} p-2 rounded-full`}>
+              {sentimentIcon}
+            </div>
+            <p className="text-sm">{sentiment_explanation || `The transcript has a ${sentiment || 'neutral'} sentiment.`}</p>
+          </div>
+        </div>
+        
+        {/* Pain Points Section */}
+        <div className="border rounded-lg p-4 space-y-2">
+          <div className="flex items-center space-x-2">
+            <AlertCircle className="h-5 w-5 text-amber-500" />
+            <h3 className="text-lg font-semibold">Pain Points</h3>
+          </div>
+          {Array.isArray(pain_points) && pain_points.length > 0 ? (
+            <ul className="space-y-2 mt-2">
+              {pain_points.map((point, index) => (
+                <li key={index} className="text-sm">
+                  {typeof point === 'string' ? 
+                    <div className="flex items-start">
+                      <span className="inline-flex items-center justify-center h-5 w-5 rounded-full bg-amber-100 text-amber-800 text-xs font-medium mr-2">{index + 1}</span>
+                      <span>{point}</span>
+                    </div> : 
+                    (point && typeof point === 'object' && 'issue' in point ? 
+                      <div>
+                        <div className="flex items-start">
+                          <span className="inline-flex items-center justify-center h-5 w-5 rounded-full bg-amber-100 text-amber-800 text-xs font-medium mr-2">{index + 1}</span>
+                          <strong>{point.issue}</strong>
+                        </div>
+                        <p className="ml-7">{point.description}</p>
+                        {Array.isArray(point.quotes) && point.quotes.length > 0 && (
+                          <blockquote className="ml-7 pl-2 border-l-2 border-gray-300 mt-1 text-xs italic text-gray-600">
+                            "{point.quotes[0]}"
+                          </blockquote>
+                        )}
+                      </div> : 
+                      <div className="flex items-start">
+                        <span className="inline-flex items-center justify-center h-5 w-5 rounded-full bg-amber-100 text-amber-800 text-xs font-medium mr-2">{index + 1}</span>
+                        <span>{JSON.stringify(point)}</span>
+                      </div>
+                    )}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-muted-foreground">No pain points identified.</p>
+          )}
+        </div>
+        
+        {/* Feature Requests Section */}
+        <div className="border rounded-lg p-4 space-y-2">
+          <div className="flex items-center space-x-2">
+            <Lightbulb className="h-5 w-5 text-purple-500" />
+            <h3 className="text-lg font-semibold">Feature Requests</h3>
+          </div>
+          {Array.isArray(feature_requests) && feature_requests.length > 0 ? (
+            <ul className="space-y-2">
+              {feature_requests.map((feature, index) => (
+                <li key={index} className="text-sm">
+                  {typeof feature === 'string' ? feature : 
+                   (feature && typeof feature === 'object' && 'feature' in feature ? 
+                    <div>
+                      <div className="flex items-start">
+                        <span className="inline-flex items-center justify-center h-5 w-5 rounded-full bg-indigo-100 text-indigo-800 text-xs font-medium mr-2">{index + 1}</span>
+                        <strong>{feature.feature}</strong>
+                      </div>
+                      <p className="ml-7">{feature.description}</p>
+                      {Array.isArray(feature.quotes) && feature.quotes.length > 0 && (
+                        <blockquote className="ml-7 pl-2 border-l-2 border-gray-300 mt-1 text-xs italic text-gray-600">
+                          "{feature.quotes[0]}"
+                        </blockquote>
+                      )}
+                    </div> : 
+                    JSON.stringify(feature))}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-muted-foreground">No feature requests identified.</p>
+          )}
+        </div>
+        
+        {/* Topics and Key Insights */}
+        {(Array.isArray(topics) && topics.length > 0) || (Array.isArray(keyInsights) && keyInsights.length > 0) ? (
+          <div className="border rounded-lg p-4 space-y-2">
+            {Array.isArray(topics) && topics.length > 0 && (
+              <div>
+                <div className="flex items-center space-x-2">
+                  <Hash className="h-5 w-5 text-blue-500" />
+                  <h3 className="text-lg font-semibold">Topics</h3>
+                </div>
+                <div className="flex flex-wrap gap-2 mt-2">
+                  {topics.map((topic: string, index: number) => (
+                    <Badge key={index} className="bg-blue-100 text-blue-800 hover:bg-blue-200">{topic}</Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+            
+            {Array.isArray(keyInsights) && keyInsights.length > 0 && (
+              <div className="mt-4">
+                <div className="flex items-center space-x-2">
+                  <KeyRound className="h-5 w-5 text-emerald-500" />
+                  <h3 className="text-lg font-semibold">Key Insights</h3>
+                </div>
+                <ul className="space-y-1 mt-2">
+                  {keyInsights.map((insight: string, index: number) => (
+                    <li key={index} className="text-sm">{insight}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        ) : null}
       </div>
     );
   };
@@ -1057,6 +1354,13 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       id: String(transcriptionRecord.id), // Ensure ID is a string
       fileName: transcriptionRecord.fileName || 'Interview', // Provide fallback
       transcriptionText: transcriptionRecord.transcriptionText || '', // Ensure text exists
+      analysisData: transcriptionRecord.analysisData || {
+        sentiment: 'neutral',
+        sentiment_explanation: 'No sentiment analysis available',
+        pain_points: [],
+        feature_requests: []
+      },
+      analysisStatus: transcriptionRecord.analysisStatus || 'pending'
     };
     
     // More detailed debug for the chat component
@@ -1066,7 +1370,9 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       idAsString: String(formattedRecord.id),
       fileName: formattedRecord.fileName,
       hasText: !!formattedRecord.transcriptionText?.length,
-      textLength: formattedRecord.transcriptionText?.length
+      textLength: formattedRecord.transcriptionText?.length,
+      hasAnalysis: !!formattedRecord.analysisData,
+      analysisStatus: formattedRecord.analysisStatus
     });
     
     return (
@@ -1107,6 +1413,7 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
           }
         }
       }
+    
     };
     
     autoProcessTranscription();
@@ -1208,6 +1515,101 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       setIsAnalyzing(false);
     };
   }, []);
+
+  // Function to handle analysis results and save to database
+  const saveAnalysisData = async (transcriptionId: string, analysisData: any) => {
+    try {
+      setLoadingState('saving-analysis');
+      setErrorMessage(null);
+      
+      // Format the analysis data to ensure it has the correct structure
+      const formattedData = {
+        sentiment: analysisData.sentiment || 'neutral',
+        sentiment_explanation: analysisData.sentiment_explanation || 'No explanation available',
+        pain_points: Array.isArray(analysisData.pain_points) ? analysisData.pain_points : [],
+        feature_requests: Array.isArray(analysisData.feature_requests) ? analysisData.feature_requests : [],
+        // Adding topics and keyInsights with type safety
+        topics: Array.isArray(analysisData.topics) ? analysisData.topics : [],
+        keyInsights: Array.isArray(analysisData.keyInsights) ? analysisData.keyInsights : []
+      };
+      
+      console.log('Saving analysis data to database:', {
+        transcriptionId,
+        dataPreview: JSON.stringify(formattedData).substring(0, 200)
+      });
+      
+      // Get the session token
+      const { data: session } = await supabase.auth.getSession();
+      const accessToken = session?.session?.access_token;
+      
+      if (!accessToken) {
+        throw new Error('No access token available');
+      }
+      
+      // Use our utility function to update analysis data
+      const responseClone = await fetch('/api/transcription/update-analysis', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${accessToken}`
+        },
+        body: JSON.stringify({
+          transcriptionId,
+          analysisData: formattedData,
+          accessToken
+        })
+      });
+      
+      // Clone the response before reading
+      const response = responseClone.clone();
+      
+      // First try JSON
+      try {
+        const data = await response.json();
+        
+        if (!response.ok) {
+          console.error('API error details:', data);
+          throw new Error(data.error || 'Failed to save analysis data');
+        }
+        
+        console.log('Analysis data saved successfully:', data);
+        setUpdateMessage('Analysis data saved successfully');
+        
+        // Update local state with the saved analysis
+        setTranscriptionRecord(prev => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            analysisData: {
+              ...prev.analysisData,
+              ...formattedData
+            },
+            analysisStatus: 'completed'
+          };
+        });
+        
+        return true;
+      } catch (jsonError) {
+        console.error('Error parsing JSON response:', jsonError);
+        
+        // If JSON parsing fails, try text
+        try {
+          const textData = await responseClone.text();
+          console.error('Text response:', textData);
+          throw new Error(`Server response error: ${textData}`);
+        } catch (textError) {
+          console.error('Error reading text response:', textError);
+          throw new Error('Failed to parse server response');
+        }
+      }
+    } catch (error) {
+      console.error('Error saving analysis data:', error);
+      setErrorMessage(`Failed to save analysis data: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      return false;
+    } finally {
+      setLoadingState('idle');
+    }
+  };
 
   return (
     <div className="container mx-auto px-4 py-6 max-w-4xl">
@@ -1394,4 +1796,21 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       )}
     </div>
   );
+}
+
+interface AnalysisData {
+  sentiment: 'positive' | 'neutral' | 'negative';
+  sentiment_explanation: string;
+  pain_points: Array<{
+    issue: string;
+    description: string;
+    quotes: string[];
+  }>;
+  feature_requests: Array<{
+    feature: string;
+    description: string;
+    quotes: string[];
+  }>;
+  topics?: string[];
+  keyInsights?: string[];
 }

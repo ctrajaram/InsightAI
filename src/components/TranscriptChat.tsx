@@ -106,8 +106,17 @@ export function TranscriptChat({ transcriptionRecord }: TranscriptChatProps) {
       }));
       
       console.log('Sending chat request with transcription ID:', transcriptionRecord.id);
+      console.log('Analysis data available:', {
+        hasAnalysisData: !!transcriptionRecord.analysisData,
+        analysisDataKeys: transcriptionRecord.analysisData ? Object.keys(transcriptionRecord.analysisData) : [],
+        sentiment: transcriptionRecord.analysisData?.sentiment,
+        hasPainPoints: Array.isArray(transcriptionRecord.analysisData?.pain_points),
+        painPointsCount: Array.isArray(transcriptionRecord.analysisData?.pain_points) ? transcriptionRecord.analysisData.pain_points.length : 0,
+        painPointsData: transcriptionRecord.analysisData?.pain_points ? JSON.stringify(transcriptionRecord.analysisData.pain_points).substring(0, 300) : 'null',
+        painPointsType: typeof transcriptionRecord.analysisData?.pain_points,
+      });
 
-      const response = await fetch('/api/chat', {
+      const responseClone = await fetch('/api/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -122,29 +131,45 @@ export function TranscriptChat({ transcriptionRecord }: TranscriptChatProps) {
           accessToken
         })
       });
+      
+      // Clone the response before attempting to read it
+      const response = responseClone.clone();
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        console.error('API error details:', errorData);
-        throw new Error(errorData.error || 'Failed to get response');
+      try {
+        if (!response.ok) {
+          const errorData = await response.json();
+          console.error('API error details:', errorData);
+          throw new Error(errorData.error || 'Failed to get response');
+        }
+
+        const data = await response.json();
+        console.log('Received chat response:', data);
+
+        const assistantMessage: Message = {
+          id: Date.now().toString() + '-assistant',
+          role: 'assistant',
+          content: data.response || 'No response content received',
+          timestamp: new Date()
+        };
+
+        setMessages(prev => [...prev, assistantMessage]);
+      } catch (jsonError) {
+        console.error('Error parsing JSON response:', jsonError);
+        try {
+          // Try to read as text if JSON parsing fails
+          const textResponse = await responseClone.text();
+          console.error('Raw response text:', textResponse);
+          setError('Failed to parse response from server');
+        } catch (textError) {
+          console.error('Error reading response as text:', textError);
+          setError('Failed to read response from server');
+        }
+      } finally {
+        setIsLoading(false);
       }
-
-      const data = await response.json();
-      console.log('Received chat response:', data);
-
-      const assistantMessage: Message = {
-        id: Date.now().toString() + '-assistant',
-        role: 'assistant',
-        content: data.response || 'No response content received',
-        timestamp: new Date()
-      };
-
-      setMessages(prev => [...prev, assistantMessage]);
     } catch (err) {
       console.error('Error in chat:', err);
       setError(err instanceof Error ? err.message : 'An unknown error occurred');
-    } finally {
-      setIsLoading(false);
     }
   };
 

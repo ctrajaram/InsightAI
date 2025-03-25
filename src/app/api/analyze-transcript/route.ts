@@ -61,6 +61,9 @@ interface AnalysisData {
   toneAnalysis?: string;
   summary?: string;
   questions?: string[];
+  pain_points?: string[];
+  feature_requests?: string[];
+  sentiment_explanation?: string;
 }
 
 // Safe JSON parsing function
@@ -327,7 +330,10 @@ export async function POST(request: NextRequest) {
         "actionItems": ["List of action items or next steps mentioned"],
         "sentiment": "Overall sentiment of the conversation (positive, negative, neutral, or mixed)",
         "toneAnalysis": "Brief analysis of the tone and style of communication",
-        "questions": ["Important questions raised during the conversation"]
+        "questions": ["Important questions raised during the conversation"],
+        "pain_points": ["List of pain points or challenges mentioned"],
+        "feature_requests": ["List of feature requests or suggestions mentioned"],
+        "sentiment_explanation": "Explanation of the sentiment detected"
       }
       
       Keep your analysis factual, concise, and directly based on content from the transcript.
@@ -352,82 +358,119 @@ export async function POST(request: NextRequest) {
       // Clear the timeout if we get a response
       clearTimeout(timeoutId);
       
-      // Process the response
-      const responseContent = completion.choices[0]?.message?.content || '';
-      console.log('Raw response from OpenAI:', responseContent.substring(0, 200) + '...');
-      
-      // Parse the response safely
-      let analysisData: AnalysisData;
+      // Parse the response from OpenAI
       try {
-        analysisData = safelyParseJSON(responseContent);
+        console.log('Raw response from OpenAI:', completion.choices[0].message.content);
         
-        // Ensure sentiment is properly formatted
+        // Parse the JSON from the OpenAI response
+        const responseText = completion.choices[0].message.content || '';
+        const analysisData = JSON.parse(responseText);
+        
+        // Normalize sentiment values to ensure consistency
         if (analysisData.sentiment) {
-          // Normalize sentiment to one of the expected values
-          const sentimentLower = String(analysisData.sentiment).toLowerCase();
-          if (sentimentLower.includes('positive')) {
-            analysisData.sentiment = 'Positive';
-          } else if (sentimentLower.includes('negative')) {
-            analysisData.sentiment = 'Negative';
-          } else if (sentimentLower.includes('neutral')) {
-            analysisData.sentiment = 'Neutral';
-          } else if (sentimentLower.includes('mixed')) {
-            analysisData.sentiment = 'Mixed';
+          const sentiment = analysisData.sentiment.toLowerCase();
+          if (sentiment.includes('positive')) {
+            analysisData.sentiment = 'positive';
+          } else if (sentiment.includes('negative')) {
+            analysisData.sentiment = 'negative';
+          } else {
+            analysisData.sentiment = 'neutral';
           }
-          
           console.log('Normalized sentiment:', analysisData.sentiment);
         } else {
           // If sentiment is missing, add a default value
-          analysisData.sentiment = 'Not determined';
-          console.log('Added default sentiment value');
+          console.log('No sentiment found in response, adding default');
+          analysisData.sentiment = 'neutral';
+          analysisData.sentiment_explanation = 'No clear sentiment detected in the transcript.';
         }
+        
+        // Ensure pain_points and feature_requests are arrays
+        if (!Array.isArray(analysisData.pain_points)) {
+          analysisData.pain_points = [];
+        }
+        
+        if (!Array.isArray(analysisData.feature_requests)) {
+          analysisData.feature_requests = [];
+        }
+        
+        // Stringify the analysis data for database storage
+        const analysisDataString = JSON.stringify(analysisData);
+        console.log('Processed analysis data:', analysisDataString);
+        
+        // Update the database with the analysis
+        try {
+          await retryOperation(async () => {
+            const { error } = await supabase
+              .from('transcriptions')
+              .update({
+                analysis_status: 'completed',
+                analysis_data: analysisData,
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', transcriptionId);
+            
+            if (error) {
+              console.error('Error updating analysis:', error);
+              throw error;
+            }
+          });
+          
+          console.log('Successfully updated transcription with analysis');
+        } catch (updateError) {
+          console.error('Failed to update transcription with analysis after multiple retries:', updateError);
+          
+          // Even though the database update failed, we can still return the analysis to the client
+          console.log('Returning analysis to client despite database update failure');
+        }
+        
+        // Return the success response with analysis
+        return NextResponse.json({
+          success: true,
+          analysis: analysisData,
+          message: 'Analysis completed successfully'
+        });
+        
       } catch (parseError) {
         console.error('Error parsing analysis data:', parseError);
         
         // If parsing fails, use the raw text
-        analysisData = {
-          summary: responseContent
+        const analysisData = {
+          summary: completion.choices[0].message.content
         };
-      }
-      
-      console.log('Processed analysis data:', JSON.stringify(analysisData).substring(0, 200) + '...');
-      
-      if (!analysisData || Object.keys(analysisData).length === 0) {
-        throw new Error('Generated analysis is empty or invalid');
-      }
-      
-      // Update the database with the analysis
-      try {
-        await retryOperation(async () => {
-          const { error } = await supabase
-            .from('transcriptions')
-            .update({
-              analysis_status: 'completed',
-              analysis_data: analysisData,
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', transcriptionId);
+        
+        // Update the database with the analysis
+        try {
+          await retryOperation(async () => {
+            const { error } = await supabase
+              .from('transcriptions')
+              .update({
+                analysis_status: 'completed',
+                analysis_data: analysisData,
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', transcriptionId);
+            
+            if (error) {
+              console.error('Error updating analysis:', error);
+              throw error;
+            }
+          });
           
-          if (error) {
-            console.error('Error updating analysis:', error);
-            throw error;
-          }
+          console.log('Successfully updated transcription with analysis');
+        } catch (updateError) {
+          console.error('Failed to update transcription with analysis after multiple retries:', updateError);
+          
+          // Even though the database update failed, we can still return the analysis to the client
+          console.log('Returning analysis to client despite database update failure');
+        }
+        
+        // Return the success response with analysis
+        return NextResponse.json({
+          success: true,
+          analysis: analysisData,
+          message: 'Analysis completed successfully'
         });
-        
-        console.log('Successfully updated transcription with analysis');
-      } catch (updateError) {
-        console.error('Failed to update transcription with analysis after multiple retries:', updateError);
-        
-        // Even though the database update failed, we can still return the analysis to the client
-        console.log('Returning analysis to client despite database update failure');
       }
-      
-      // Return the success response with analysis
-      return NextResponse.json({
-        success: true,
-        analysis: analysisData,
-        message: 'Analysis completed successfully'
-      });
       
     } catch (openaiError: any) {
       // Clear the timeout if there was an error

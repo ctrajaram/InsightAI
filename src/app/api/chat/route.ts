@@ -92,7 +92,7 @@ export async function POST(req: Request) {
       
       const { data: directTranscription, error: directError } = await supabase
         .from('transcriptions')
-        .select('*')
+        .select('*, analysis_data')
         .eq('id', queryId)
         .maybeSingle();
       
@@ -118,7 +118,7 @@ export async function POST(req: Request) {
         // If we can't find it directly, try getting all transcriptions for the user
         const { data: userTranscriptions, error: listError } = await supabase
           .from('transcriptions')
-          .select('*')
+          .select('*, analysis_data')
           .eq('user_id', userData.user.id);
           
         if (listError) {
@@ -173,6 +173,57 @@ export async function POST(req: Request) {
     // Map database fields to camelCase for consistency
     const transcriptionData = mapDbRecordToTranscriptionRecord(transcription);
 
+    // Log the raw analysis_data from the database record
+    console.log('Chat API: Raw analysis_data from database:', {
+      hasRawAnalysisData: !!transcription.analysis_data,
+      rawAnalysisDataType: typeof transcription.analysis_data,
+      rawAnalysisDataKeys: transcription.analysis_data ? Object.keys(transcription.analysis_data) : [],
+      rawAnalysisDataSample: transcription.analysis_data ? JSON.stringify(transcription.analysis_data).substring(0, 200) : 'null'
+    });
+
+    // Debug log for analysis data
+    console.log('Chat API: Analysis data available:', {
+      hasAnalysisData: !!transcriptionData.analysisData,
+      analysisDataKeys: transcriptionData.analysisData ? Object.keys(transcriptionData.analysisData) : [],
+      sentiment: transcriptionData.analysisData?.sentiment,
+      hasPainPoints: Array.isArray(transcriptionData.analysisData?.pain_points),
+      painPointsCount: Array.isArray(transcriptionData.analysisData?.pain_points) ? transcriptionData.analysisData.pain_points.length : 0,
+      painPointsData: transcriptionData.analysisData?.pain_points ? JSON.stringify(transcriptionData.analysisData.pain_points).substring(0, 300) : 'null',
+      painPointsType: typeof transcriptionData.analysisData?.pain_points,
+      hasFeatureRequests: Array.isArray(transcriptionData.analysisData?.feature_requests),
+      featureRequestsCount: Array.isArray(transcriptionData.analysisData?.feature_requests) ? transcriptionData.analysisData.feature_requests.length : 0,
+      rawAnalysisData: JSON.stringify(transcriptionData.analysisData).substring(0, 200) + '...',
+    });
+
+    // Ensure analysis data is properly structured
+    const analysisData = transcriptionData.analysisData || {
+      sentiment: 'neutral',
+      sentiment_explanation: 'No sentiment analysis available',
+      pain_points: [],
+      feature_requests: []
+    };
+
+    // Force parse the analysis_data if it's a string (happens sometimes with Supabase)
+    if (typeof transcription.analysis_data === 'string' && transcription.analysis_data) {
+      try {
+        const parsedData = JSON.parse(transcription.analysis_data);
+        if (parsedData && typeof parsedData === 'object') {
+          // Override the mapped data with directly parsed data to ensure consistency
+          Object.assign(analysisData, parsedData);
+          console.log('Chat API: Successfully parsed analysis_data from string');
+        }
+      } catch (e) {
+        console.error('Chat API: Error parsing analysis_data string:', e);
+      }
+    }
+
+    // Log the final analysis data that will be used
+    console.log('Chat API: Final analysis data being used:', {
+      painPoints: analysisData.pain_points,
+      painPointsCount: Array.isArray(analysisData.pain_points) ? analysisData.pain_points.length : 0,
+      sentiment: analysisData.sentiment
+    });
+
     // Create system message with context
     const systemMessage = {
       role: 'system',
@@ -182,14 +233,28 @@ You have access to the following information about an interview:
 1. Full Transcript: "${transcriptionData.transcriptionText}"
 2. AI Summary: "${transcriptionData.summaryText || 'Not available'}"
 3. Sentiment Analysis: ${
-        transcriptionData.analysisData
+        Object.keys(analysisData).length > 0
           ? `
-   - Overall Sentiment: ${transcriptionData.analysisData.sentiment}
-   - Sentiment Explanation: ${transcriptionData.analysisData.sentiment_explanation}
-   - Pain Points: ${JSON.stringify(transcriptionData.analysisData.pain_points || [])}
-   - Feature Requests: ${JSON.stringify(transcriptionData.analysisData.feature_requests || [])}`
+   - Overall Sentiment: ${analysisData.sentiment || 'neutral'}
+   - Sentiment Explanation: ${analysisData.sentiment_explanation || 'No explanation available'}
+   - Pain Points: ${
+      Array.isArray(analysisData.pain_points) && analysisData.pain_points.length > 0
+        ? analysisData.pain_points.map(p => `- ${p}`).join('\n      ')
+        : 'No pain points were identified'
+    }
+   - Feature Requests: ${JSON.stringify(analysisData.feature_requests || [])}`
           : 'Not available'
       }
+
+IMPORTANT INSTRUCTIONS:
+1. When asked about sentiment, pain points, or other analysis data, ALWAYS check the Sentiment Analysis section above.
+2. If Overall Sentiment shows a value like "positive", "negative", or "neutral", then sentiment analysis IS available.
+3. IMPORTANT: For pain points, carefully check the actual content of the Pain Points array above.
+   - If the array contains items (not empty []), there ARE pain points to report. List them in detail.
+   - If the array is empty ([]), explicitly state "No pain points were identified in this interview transcript."
+   - NEVER say there are no pain points unless you've verified the Pain Points array is empty.
+4. NEVER say "sentiment analysis is not available" if the Overall Sentiment field has a value.
+5. If asked specifically about pain points, ALWAYS check the actual Pain Points array content before responding.
 
 Help the user understand the interview data by answering their questions about the content, insights, sentiment, and any patterns you detect. Be helpful, concise, and thoughtful in your responses.`,
     };
