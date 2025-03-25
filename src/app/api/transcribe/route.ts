@@ -304,10 +304,11 @@ export async function POST(request: NextRequest) {
         })
         .eq('id', transcriptionData.id);
       
-      return NextResponse.json(
-        { error: 'Failed to access media file after multiple attempts' }, 
-        { status: 500 }
-      );
+      return NextResponse.json({ 
+        success: false,
+        error: 'Failed to access media file after multiple attempts',
+        details: JSON.stringify({ error: 'Failed to access media file after multiple attempts' })
+      }, { status: 500 });
     }
     
     // Transcribe audio with timeout handling
@@ -410,8 +411,9 @@ export async function POST(request: NextRequest) {
             .eq('id', transcriptionData.id);
             
           return NextResponse.json({ 
+            success: false,
             error: 'The transcription process timed out',
-            details: 'The file may be too large or the service is currently experiencing high load. Please try again later or with a shorter audio file.'
+            details: JSON.stringify({ error: 'The transcription process timed out' })
           }, { status: 504 }); // Gateway Timeout
         }
         
@@ -454,7 +456,9 @@ export async function POST(request: NextRequest) {
         console.error('Error updating transcription status to error:', updateError);
       }
       
+      // Ensure the error response is valid JSON
       return NextResponse.json({ 
+        success: false,
         error: 'Transcription failed',
         details: errorMessage
       }, { status: 500 });
@@ -463,7 +467,9 @@ export async function POST(request: NextRequest) {
   } catch (error: any) {
     console.error('Unexpected error in transcribe API:', error);
     
+    // Ensure the error response is valid JSON
     return NextResponse.json({ 
+      success: false,
       error: 'An unexpected error occurred',
       details: error.message || 'Unknown error'
     }, { status: 500 });

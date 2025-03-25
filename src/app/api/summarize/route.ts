@@ -2,11 +2,16 @@ import { createClient } from '@supabase/supabase-js';
 import { NextRequest, NextResponse } from 'next/server';
 import OpenAI from 'openai';
 
-// Create a standard Supabase client
+// Create Supabase client without relying on cookies
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
+
+// OpenAI client
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
 // Helper function to wait for a specified time
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -34,241 +39,279 @@ async function retryOperation<T>(
   throw lastError;
 }
 
+// Interface for structured summary data
+interface SummaryData {
+  text: string;
+  keyPoints?: string[];
+  topics?: string[];
+}
+
+// Function to safely handle JSON parsing with fallbacks
+function safelyParseJSON(text: string): any {
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    console.error('JSON parse error:', error);
+    // Try to extract JSON-like structure from the text
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        return JSON.parse(jsonMatch[0]);
+      } catch (nestedError) {
+        console.error('Nested JSON parse error:', nestedError);
+      }
+    }
+    
+    // If all parsing fails, return a basic structure with the text
+    return { text: text };
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
-    // Parse request body with error handling
+    // Parse request body with proper error handling
     let body;
     try {
       body = await request.json();
     } catch (parseError) {
       console.error('Failed to parse request body as JSON:', parseError);
-      return NextResponse.json({ 
-        error: 'Invalid JSON in request body',
-        details: 'Please ensure the request body is valid JSON'
+      return NextResponse.json({
+        success: false,
+        error: 'Invalid JSON in request body'
       }, { status: 400 });
     }
     
+    // Extract and validate the required fields
     const { transcriptionId, transcriptionText, accessToken } = body;
     
-    // Basic validation with detailed error messages
     if (!transcriptionId) {
       console.error('Missing required field: transcriptionId');
-      return NextResponse.json(
-        { error: 'Missing required field: transcriptionId' }, 
-        { status: 400 }
-      );
+      return NextResponse.json({
+        success: false,
+        error: 'Missing required field: transcriptionId'
+      }, { status: 400 });
     }
     
     if (!transcriptionText) {
       console.error('Missing required field: transcriptionText');
-      return NextResponse.json(
-        { error: 'Missing required field: transcriptionText' }, 
-        { status: 400 }
-      );
+      return NextResponse.json({
+        success: false,
+        error: 'Missing required field: transcriptionText'
+      }, { status: 400 });
     }
     
-    if (typeof transcriptionText !== 'string') {
-      console.error('Invalid transcription text type:', typeof transcriptionText);
-      return NextResponse.json(
-        { error: 'Transcription text must be a string' }, 
-        { status: 400 }
-      );
-    }
-    
-    if (transcriptionText.trim().length < 10) {
-      console.error('Transcription text too short for summarization');
-      return NextResponse.json(
-        { error: 'Transcription text too short for summarization' }, 
-        { status: 400 }
-      );
-    }
-    
-    // Check for authentication token
     if (!accessToken) {
       console.error('No access token provided');
-      return NextResponse.json(
-        { error: 'Authentication required. Please sign in and try again.' }, 
-        { status: 401 }
-      );
+      return NextResponse.json({
+        success: false,
+        error: 'Authentication required'
+      }, { status: 401 });
     }
     
     // Verify the token with Supabase
     const { data: { user }, error: authError } = await supabase.auth.getUser(accessToken);
     
     if (authError || !user) {
-      console.error('Authentication error:', authError?.message || 'No user found');
-      return NextResponse.json(
-        { error: 'Authentication failed. Please sign in again.' }, 
-        { status: 401 }
-      );
+      console.error('Authentication error:', authError);
+      return NextResponse.json({
+        success: false,
+        error: 'Authentication failed. Please sign in again.'
+      }, { status: 401 });
     }
     
-    console.log(`Processing summary for user: ${user.email} (ID: ${user.id}), transcription: ${transcriptionId}`);
+    // Check if this transcription belongs to the authenticated user
+    const { data: transcription, error: transcriptionError } = await supabase
+      .from('transcriptions')
+      .select('id, user_id, status, summary_status')
+      .eq('id', transcriptionId)
+      .single();
     
-    // Check if OpenAI API key is set
-    const openaiApiKey = process.env.OPENAI_API_KEY;
-    if (!openaiApiKey || openaiApiKey === 'your-openai-api-key') {
-      console.error('OpenAI API key not configured correctly');
-      return NextResponse.json(
-        { error: 'OpenAI API key not configured. Please set up your API key.' }, 
-        { status: 500 }
-      );
+    if (transcriptionError) {
+      console.error('Error fetching transcription:', transcriptionError);
+      return NextResponse.json({
+        success: false,
+        error: 'Transcription not found'
+      }, { status: 404 });
     }
     
-    // Initialize OpenAI client
-    const openai = new OpenAI({
-      apiKey: openaiApiKey,
-    });
+    if (transcription.user_id !== user.id) {
+      console.error(`Unauthorized: User ${user.id} attempted to access transcription owned by ${transcription.user_id}`);
+      return NextResponse.json({
+        success: false,
+        error: 'You do not have permission to access this transcription'
+      }, { status: 403 });
+    }
     
-    // Update transcription record to show summarizing status with retry mechanism
+    // Mark the transcription as being summarized
+    console.log('Setting summary_status to processing');
+    
     try {
       await retryOperation(async () => {
-        const { error: updateError } = await supabase
+        const { error } = await supabase
           .from('transcriptions')
           .update({ summary_status: 'processing' })
           .eq('id', transcriptionId);
         
-        if (updateError) {
-          console.error('Error updating summary status:', updateError);
-          throw updateError;
+        if (error) {
+          console.error('Error updating summary status:', error);
+          throw error;
         }
       });
     } catch (updateError) {
-      console.error('All attempts to update summary status failed:', updateError);
-      return NextResponse.json(
-        { error: 'Failed to update summary status after multiple attempts' }, 
-        { status: 500 }
-      );
+      console.error('Failed to update summary status after retries:', updateError);
+      // Continue anyway, but log the issue
     }
     
-    // Craft the prompt for GPT-4
-    const prompt = `
-    Create a concise summary of the following transcript. 
-    Highlight key points, main topics discussed, and any actionable items or conclusions.
-    Focus on delivering the most important information in a clear, organized manner.
-    
-    TRANSCRIPT:
-    ${transcriptionText}
-    
-    SUMMARY:
+    // Prepare the prompt for OpenAI
+    const systemPrompt = `
+      You are an AI assistant specializing in summarizing transcripts. The user will provide a transcript.
+      
+      Please provide a summary in JSON format with the following structure:
+      {
+        "text": "A concise 2-3 paragraph summary of the main points discussed",
+        "keyPoints": ["A list of 3-5 bullet points highlighting the key takeaways"],
+        "topics": ["A list of main topics covered in the discussion"]
+      }
+      
+      Keep your summary clear, accurate, and focused on the most important information.
     `;
     
-    // Generate summary with GPT-4 with timeout handling
-    console.log('Sending to GPT-4 for summarization...');
+    // Set a timeout for the OpenAI request
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minute timeout
     
     try {
+      // Call OpenAI for summarization
       const completion = await openai.chat.completions.create({
         model: "gpt-4",
         messages: [
-          { role: "system", content: "You are a skilled assistant that creates concise, accurate summaries of transcribed content." },
-          { role: "user", content: prompt }
+          { role: "system", content: systemPrompt },
+          { role: "user", content: `Please summarize the following transcript:\n\n${transcriptionText}` }
         ],
-        temperature: 0.5,
-        max_tokens: 500,
+        temperature: 0.3,
+        max_tokens: 800
       }, { signal: controller.signal });
       
-      clearTimeout(timeoutId); // Clear the timeout if the request completes successfully
+      // Clear the timeout if we get a response
+      clearTimeout(timeoutId);
       
-      // Extract the generated summary
-      const summaryText = completion.choices[0].message.content?.trim();
-      console.log('Summary generated, length:', summaryText?.length);
+      // Process the response
+      const responseContent = completion.choices[0]?.message?.content || '';
+      console.log('Raw response from OpenAI:', responseContent.substring(0, 200) + '...');
       
-      if (!summaryText) {
-        throw new Error('Failed to generate summary: Empty response from OpenAI');
+      // Parse the response safely
+      let summaryData: SummaryData;
+      try {
+        summaryData = safelyParseJSON(responseContent);
+        
+        // If we get an object without a text field, ensure there's something in the text field
+        if (!summaryData.text && typeof responseContent === 'string') {
+          summaryData.text = responseContent;
+        }
+      } catch (parseError) {
+        console.error('Error parsing summary data:', parseError);
+        
+        // If parsing fails, use the raw text
+        summaryData = {
+          text: responseContent
+        };
       }
       
-      // Update the database with the summary using retry mechanism
+      console.log('Processed summary data:', JSON.stringify(summaryData).substring(0, 200) + '...');
+      
+      if (!summaryData.text || summaryData.text.trim().length === 0) {
+        throw new Error('Generated summary is empty');
+      }
+      
+      // Update the database with the summary
       try {
         await retryOperation(async () => {
-          const { error: saveError } = await supabase
+          const { error } = await supabase
             .from('transcriptions')
             .update({
-              summary_text: summaryText,
               summary_status: 'completed',
+              summary_text: summaryData.text,
+              summary_data: summaryData,
               updated_at: new Date().toISOString()
             })
             .eq('id', transcriptionId);
           
-          if (saveError) {
-            console.error('Error saving summary to database:', saveError);
-            throw saveError;
+          if (error) {
+            console.error('Error updating summary:', error);
+            throw error;
           }
         });
         
-        console.log('Summary saved to database successfully');
-      } catch (saveError) {
-        console.error('All attempts to save summary failed:', saveError);
-        return NextResponse.json(
-          { error: 'Failed to save summary to database after multiple attempts' }, 
-          { status: 500 }
-        );
+        console.log('Successfully updated transcription with summary');
+      } catch (updateError) {
+        console.error('Failed to update transcription with summary after multiple retries:', updateError);
+        
+        // Even though the database update failed, we can still return the summary to the client
+        console.log('Returning summary to client despite database update failure');
       }
       
-      // Return the summary
+      // Return the success response with summary
       return NextResponse.json({
         success: true,
-        transcriptionId,
-        summary: {
-          text: summaryText,
-          status: 'completed'
-        }
+        summary: summaryData
       });
-    } catch (error: any) {
-      clearTimeout(timeoutId); // Make sure to clear the timeout
       
-      if (error.name === 'AbortError' || error.code === 'ETIMEDOUT') {
-        console.error('OpenAI API request timed out after 2 minutes');
+    } catch (openaiError: any) {
+      // Clear the timeout if there was an error
+      clearTimeout(timeoutId);
+      
+      console.error('OpenAI summarization error:', openaiError);
+      
+      // Check if this was an abort error (timeout)
+      if (openaiError.name === 'AbortError' || openaiError.code === 'ETIMEDOUT') {
+        console.error('Summary generation timed out after 2 minutes');
         
-        // Update the record with error status
-        try {
-          await supabase
-            .from('transcriptions')
-            .update({
-              summary_status: 'error',
-              error: 'The summarization process timed out',
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', transcriptionId);
-        } catch (updateError) {
-          console.error('Error updating summary error status:', updateError);
-        }
-        
-        return NextResponse.json({ 
-          error: 'The summarization process timed out',
-          details: 'The request to the AI service took too long to complete. Please try again with a shorter transcript.'
-        }, { status: 504 }); // Gateway Timeout
-      }
-      
-      throw error; // Re-throw for the outer catch block
-    }
-  } catch (error: any) {
-    console.error('Summarization API error:', error);
-    
-    // Try to update the transcription record with error status
-    try {
-      const body = await request.json().catch(_ => null);
-      const transcriptionId = body?.transcriptionId;
-      
-      if (transcriptionId) {
         await supabase
           .from('transcriptions')
           .update({
             summary_status: 'error',
-            error: error.message || 'Error generating summary',
+            error: 'Summary generation timed out',
             updated_at: new Date().toISOString()
           })
           .eq('id', transcriptionId);
+          
+        return NextResponse.json({
+          success: false,
+          error: 'The summary generation process timed out'
+        }, { status: 504 });
       }
-    } catch (updateError) {
-      console.error('Error updating summary error status:', updateError);
+      
+      // If something else went wrong with OpenAI
+      let errorMessage = openaiError.message || 'Error generating summary';
+      
+      try {
+        await supabase
+          .from('transcriptions')
+          .update({
+            summary_status: 'error',
+            error: errorMessage,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', transcriptionId);
+      } catch (updateError) {
+        console.error('Failed to update error status in database:', updateError);
+      }
+      
+      return NextResponse.json({
+        success: false,
+        error: 'Failed to generate summary',
+        details: errorMessage
+      }, { status: 500 });
     }
     
-    return NextResponse.json(
-      { error: error.message || 'An error occurred during summarization' },
-      { status: 500 }
-    );
+  } catch (error: any) {
+    console.error('Unexpected error in summarize API:', error);
+    
+    return NextResponse.json({
+      success: false,
+      error: 'An unexpected error occurred',
+      details: error.message
+    }, { status: 500 });
   }
 }
 

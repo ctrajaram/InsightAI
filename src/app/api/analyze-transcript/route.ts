@@ -1,8 +1,14 @@
-import OpenAI from 'openai';
 import { createClient } from '@supabase/supabase-js';
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
+import OpenAI from 'openai';
 
-// Initialize OpenAI client
+// Create Supabase client without relying on cookies
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
+
+// OpenAI client
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
@@ -33,305 +39,203 @@ async function retryOperation<T>(
   throw lastError;
 }
 
-// Define the structure for transcription record
+// Define interfaces for better type safety
 interface TranscriptionRecord {
   id: string;
   user_id: string;
   transcription_text: string;
-  analysis_status?: string;
-  analysis_data?: any;
-  [key: string]: any; // For other potential fields
+  status: string;
 }
 
-// Define structure for analysis data
 interface AnalysisData {
-  sentiment: string;
-  sentiment_explanation: string;
-  pain_points: Array<{
-    issue: string;
-    description: string;
-    quotes: string[];
-  }>;
-  feature_requests: Array<{
-    feature: string;
-    description: string;
-    quotes: string[];
-  }>;
-  [key: string]: any; // For flexibility
+  topics?: string[];
+  keyInsights?: string[];
+  actionItems?: string[];
+  sentiment?: string;
+  toneAnalysis?: string;
+  summary?: string;
+  questions?: string[];
 }
 
-// Helper function to process OpenAI response with better error handling
-const processOpenAIResponse = (content: string): AnalysisData => {
-  // First try direct JSON parsing
+// Safe JSON parsing function
+function safelyParseJSON(text: string): any {
   try {
-    const jsonData = JSON.parse(content);
-    return jsonData as AnalysisData;
-  } catch (parseError) {
-    console.error('Direct JSON parsing failed:', parseError);
-    
-    // Try to extract JSON from text (in case of extra text around valid JSON)
-    try {
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      if (jsonMatch && jsonMatch[0]) {
-        const extractedJson = jsonMatch[0];
-        console.log('Extracted potential JSON:', extractedJson.substring(0, 100) + '...');
-        return JSON.parse(extractedJson) as AnalysisData;
+    return JSON.parse(text);
+  } catch (error) {
+    console.error('JSON parse error:', error);
+    // Try to extract JSON-like structure from text
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        return JSON.parse(jsonMatch[0]);
+      } catch (nestedError) {
+        console.error('Nested JSON parse error:', nestedError);
       }
-    } catch (extractError) {
-      console.error('JSON extraction failed:', extractError);
     }
     
-    // If all else fails, create a fallback object
-    return {
-      sentiment: "unknown",
-      sentiment_explanation: "Failed to parse AI response",
-      pain_points: [],
-      feature_requests: []
-    };
+    // If all parsing fails, return an object with just the text
+    return { text: text };
   }
-};
+}
 
-export async function POST(req: Request): Promise<NextResponse> {
+export async function POST(request: NextRequest) {
   try {
-    // Parse request body with error handling
+    // Parse request body with proper error handling
     let body;
     try {
-      body = await req.json();
+      body = await request.json();
     } catch (parseError) {
       console.error('Failed to parse request body as JSON:', parseError);
-      return NextResponse.json({ 
-        error: 'Invalid JSON in request body',
-        details: 'Please ensure the request body is valid JSON'
+      return NextResponse.json({
+        success: false,
+        error: 'Invalid JSON in request body'
       }, { status: 400 });
     }
     
+    // Extract and validate the required fields
     const { transcriptionId, transcriptionText, accessToken } = body;
-
-    console.log('API Request received for transcriptionId:', transcriptionId);
-    console.log('Request body type:', typeof body);
-    console.log('Transcription text provided?', !!transcriptionText);
-    console.log('Transcription text length:', transcriptionText?.length || 0);
-    console.log('Access token provided?', !!accessToken);
-
-    // Check for authentication
+    
+    if (!transcriptionId) {
+      console.error('Missing required field: transcriptionId');
+      return NextResponse.json({
+        success: false,
+        error: 'Missing required field: transcriptionId'
+      }, { status: 400 });
+    }
+    
+    if (!transcriptionText) {
+      console.error('Missing required field: transcriptionText');
+      return NextResponse.json({
+        success: false,
+        error: 'Missing required field: transcriptionText'
+      }, { status: 400 });
+    }
+    
     if (!accessToken) {
       console.error('No access token provided');
-      return NextResponse.json(
-        { error: 'Authentication required. Please sign in and try again.' }, 
-        { status: 401 }
-      );
+      return NextResponse.json({
+        success: false,
+        error: 'Authentication required'
+      }, { status: 401 });
     }
-
-    // Check for required fields
-    if (!transcriptionId && !transcriptionText) {
-      console.error('Missing required fields: transcriptionId or transcriptionText');
-      return NextResponse.json({ error: 'Missing required fields: transcriptionId or transcriptionText' }, { status: 400 });
+    
+    // Verify the token with Supabase
+    const { data: { user }, error: authError } = await supabase.auth.getUser(accessToken);
+    
+    if (authError || !user) {
+      console.error('Authentication error:', authError);
+      return NextResponse.json({
+        success: false,
+        error: 'Authentication failed. Please sign in again.'
+      }, { status: 401 });
     }
-
-    let finalTranscriptionText = transcriptionText;
-    let transcriptionRecord: TranscriptionRecord | null = null;
-
-    // If transcriptionId is provided, try to fetch the record from the database
-    if (transcriptionId) {
-      if (typeof transcriptionId !== 'string' || transcriptionId.trim() === '') {
-        console.error('Invalid transcription ID received:', transcriptionId);
-        return NextResponse.json({ error: 'Valid transcription ID is required' }, { status: 400 });
-      }
-
-      // Sanitize the ID
-      const cleanTranscriptionId = transcriptionId.trim();
-      console.log('Cleaned transcription ID:', cleanTranscriptionId);
-      console.log('Transcription ID length:', cleanTranscriptionId.length);
+    
+    console.log(`Processing analysis for user: ${user.email} (ID: ${user.id})`);
+    
+    // Check if this transcription belongs to the authenticated user
+    const { data: transcription, error: transcriptionError } = await supabase
+      .from('transcriptions')
+      .select('id, user_id, transcription_text, status')
+      .eq('id', transcriptionId)
+      .single();
+    
+    if (transcriptionError) {
+      console.error('Error fetching transcription:', transcriptionError);
+      return NextResponse.json({
+        success: false,
+        error: 'Transcription not found'
+      }, { status: 404 });
+    }
+    
+    if (transcription.user_id !== user.id) {
+      console.error(`Unauthorized: User ${user.id} attempted to access transcription owned by ${transcription.user_id}`);
+      return NextResponse.json({
+        success: false,
+        error: 'You do not have permission to access this transcription'
+      }, { status: 403 });
+    }
+    
+    // Mark the transcription as being analyzed
+    try {
+      await retryOperation(async () => {
+        const { error } = await supabase
+          .from('transcriptions')
+          .update({ analysis_status: 'processing' })
+          .eq('id', transcriptionId);
+        
+        if (error) {
+          console.error('Error updating analysis status:', error);
+          throw error;
+        }
+      });
+    } catch (updateError) {
+      console.error('Failed to update analysis status after retries:', updateError);
+      // Continue anyway, but log the issue
+    }
+    
+    // Prepare a structured prompt for OpenAI
+    const systemPrompt = `
+      You are an AI assistant specializing in transcript analysis. The user will provide a transcript.
       
-      // Validate UUID format
-      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-      if (!uuidRegex.test(cleanTranscriptionId)) {
-        console.error('Invalid UUID format:', cleanTranscriptionId);
-        return NextResponse.json({ error: 'Invalid UUID format for transcription ID' }, { status: 400 });
+      Please analyze the transcript and provide a response in JSON format with the following structure:
+      {
+        "topics": ["List of main topics discussed"],
+        "keyInsights": ["List of key insights from the conversation"],
+        "actionItems": ["List of action items or next steps mentioned"],
+        "sentiment": "Overall sentiment of the conversation (positive, negative, neutral, or mixed)",
+        "toneAnalysis": "Brief analysis of the tone and style of communication",
+        "questions": ["Important questions raised during the conversation"]
       }
-
-      // Check if OpenAI API key is configured
-      if (!process.env.OPENAI_API_KEY) {
-        console.error('OpenAI API key is not configured');
-        return NextResponse.json({ error: 'OpenAI API key is not configured' }, { status: 500 });
-      }
-
-      // Create Supabase client
-      console.log('Creating Supabase client...');
-      const supabase = createClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-      );
-      console.log('Supabase client created successfully');
-
-      // Try to get the specific transcription with retry mechanism
-      try {
-        transcriptionRecord = await retryOperation(async () => {
-          console.log('Querying for transcription with ID:', cleanTranscriptionId);
-          const { data, error } = await supabase
-            .from('transcriptions')
-            .select('*')
-            .eq('id', cleanTranscriptionId)
-            .single();
-            
-          if (error) {
-            console.error('Error fetching transcription:', error);
-            throw error;
-          }
-          
-          if (!data) {
-            throw new Error('No transcription found with ID: ' + cleanTranscriptionId);
-          }
-          
-          return data as TranscriptionRecord;
-        }, 3, 1000);
-        
-        if (transcriptionRecord) {
-          console.log('Found transcription record:', transcriptionRecord);
-          
-          // Use the transcription text from the database if not provided directly
-          if (!finalTranscriptionText) {
-            finalTranscriptionText = transcriptionRecord.transcription_text;
-          }
-          
-          // Update analysis status to processing - using the field names from the database
-          console.log('Updating analysis status to processing...');
-          await retryOperation(async () => {
-            const { error: updateStatusError } = await supabase
-              .from('transcriptions')
-              .update({
-                analysis_status: 'processing',
-                updated_at: new Date().toISOString()
-              })
-              .eq('id', transcriptionRecord!.id);
-
-            if (updateStatusError) {
-              console.error('Error updating analysis status:', updateStatusError);
-              throw updateStatusError;
-            }
-          });
-        }
-      } catch (recordError: any) {
-        console.error('Error retrieving transcription record:', recordError);
-        
-        // If we have transcriptionText provided directly, we can still proceed
-        if (!finalTranscriptionText) {
-          return NextResponse.json({ 
-            error: 'Transcription not found and no transcription text provided',
-            details: recordError.message || 'No matching record found with ID: ' + cleanTranscriptionId
-          }, { status: 404 });
-        }
-        
-        console.log('Proceeding with provided transcription text despite database error');
-      }
-    }
-
-    // Final check for transcription text
-    if (!finalTranscriptionText) {
-      console.error('No transcription text available from any source');
-      return NextResponse.json({ error: 'Transcription text is empty or not provided' }, { status: 400 });
-    }
-
-    // Prepare prompt for GPT-4
-    console.log('Preparing prompt for OpenAI...');
-    const prompt = `
-You are an expert at analyzing customer interviews and extracting valuable insights. 
-Analyze the following interview transcript and extract:
-
-1. Overall customer sentiment (positive, neutral, or negative)
-2. A brief explanation of why you determined this sentiment (2-3 sentences)
-3. Top customer pain points (3-5 points)
-4. Top requested features or improvements (3-5 ideas)
-
-For pain points and feature requests, include:
-- A clear title/summary of the issue or request
-- A brief description explaining it
-- 1-2 direct quotes from the transcript that support this point
-
-Format your response as a valid JSON object with the following structure:
-{
-  "sentiment": "positive|neutral|negative",
-  "sentiment_explanation": "Brief explanation of sentiment",
-  "pain_points": [
-    {
-      "issue": "Issue title",
-      "description": "Brief description",
-      "quotes": ["Quote 1", "Quote 2"]
-    }
-  ],
-  "feature_requests": [
-    {
-      "feature": "Feature title",
-      "description": "Brief description",
-      "quotes": ["Quote 1", "Quote 2"]
-    }
-  ]
-}
-
-Transcript:
-${finalTranscriptionText}
-`;
-
-    // Call OpenAI API with timeout handling
-    console.log('Calling OpenAI API...');
+      
+      Keep your analysis factual, concise, and directly based on content from the transcript.
+    `;
+    
+    // Set a timeout for the OpenAI request
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minute timeout
     
     try {
-      const response = await openai.chat.completions.create({
-        model: 'gpt-4',
+      // Call OpenAI for analysis
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4",
         messages: [
-          { role: 'system', content: 'You are an expert at analyzing customer interviews and extracting insights.' },
-          { role: 'user', content: prompt }
+          { role: "system", content: systemPrompt },
+          { role: "user", content: `Please analyze the following transcript:\n\n${transcriptionText}` }
         ],
-        temperature: 0.2,
-        max_tokens: 2000,
+        temperature: 0.3,
+        max_tokens: 800
       }, { signal: controller.signal });
       
-      clearTimeout(timeoutId); // Clear the timeout if the request completes successfully
+      // Clear the timeout if we get a response
+      clearTimeout(timeoutId);
       
-      // Parse the response
-      console.log('Received response from OpenAI, parsing...');
-      const analysisText = response.choices[0].message.content || '';
+      // Process the response
+      const responseContent = completion.choices[0]?.message?.content || '';
+      console.log('Raw response from OpenAI:', responseContent.substring(0, 200) + '...');
       
-      // Use the helper function to process the response
-      const analysisData = processOpenAIResponse(analysisText);
-      
-      // Validate the structure of the analysis data
-      if (!analysisData.sentiment) {
-        console.warn('Warning: sentiment field is missing from the analysis data');
-        analysisData.sentiment = "unknown";
-      }
-      
-      if (!analysisData.sentiment_explanation) {
-        console.warn('Warning: sentiment_explanation field is missing from the analysis data');
-        // Add a default explanation if missing
-        analysisData.sentiment_explanation = "No sentiment explanation provided by the AI.";
-      } else {
-        console.log('Sentiment explanation found:', analysisData.sentiment_explanation);
-      }
-      
-      if (!analysisData.pain_points || !Array.isArray(analysisData.pain_points)) {
-        console.warn('Warning: pain_points field is missing or not an array');
-        analysisData.pain_points = [];
-      }
-      
-      if (!analysisData.feature_requests || !Array.isArray(analysisData.feature_requests)) {
-        console.warn('Warning: feature_requests field is missing or not an array');
-        analysisData.feature_requests = [];
-      }
-      
-      // Update the record with the analysis results if we have a transcription record
-      if (transcriptionRecord && transcriptionId) {
-        console.log('Updating record with analysis results...');
-        const supabase = createClient(
-          process.env.NEXT_PUBLIC_SUPABASE_URL!,
-          process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-        );
+      // Parse the response safely
+      let analysisData: AnalysisData;
+      try {
+        analysisData = safelyParseJSON(responseContent);
+      } catch (parseError) {
+        console.error('Error parsing analysis data:', parseError);
         
-        // Use retry mechanism for the update operation
+        // If parsing fails, use the raw text
+        analysisData = {
+          summary: responseContent
+        };
+      }
+      
+      console.log('Processed analysis data:', JSON.stringify(analysisData).substring(0, 200) + '...');
+      
+      if (!analysisData || Object.keys(analysisData).length === 0) {
+        throw new Error('Generated analysis is empty or invalid');
+      }
+      
+      // Update the database with the analysis
+      try {
         await retryOperation(async () => {
-          const { error: updateError } = await supabase
+          const { error } = await supabase
             .from('transcriptions')
             .update({
               analysis_status: 'completed',
@@ -339,41 +243,88 @@ ${finalTranscriptionText}
               updated_at: new Date().toISOString()
             })
             .eq('id', transcriptionId);
-
-          if (updateError) {
-            console.error('Error updating record with analysis:', updateError);
-            throw updateError;
-          }
           
-          console.log('Analysis completed and saved successfully');
+          if (error) {
+            console.error('Error updating analysis:', error);
+            throw error;
+          }
         });
-      } else {
-        console.log('No transcription record to update, returning analysis data only');
+        
+        console.log('Successfully updated transcription with analysis');
+      } catch (updateError) {
+        console.error('Failed to update transcription with analysis after multiple retries:', updateError);
+        
+        // Even though the database update failed, we can still return the analysis to the client
+        console.log('Returning analysis to client despite database update failure');
       }
       
-      // Return the analysis data
+      // Return the success response with analysis
       return NextResponse.json({
         success: true,
         analysis: analysisData
       });
-    } catch (error: any) {
-      clearTimeout(timeoutId); // Make sure to clear the timeout
       
-      if (error.name === 'AbortError' || error.code === 'ETIMEDOUT') {
-        console.error('OpenAI API request timed out after 2 minutes');
-        return NextResponse.json({ 
-          error: 'The analysis process timed out',
-          details: 'The request to the AI service took too long to complete. Please try again with a shorter transcript.'
-        }, { status: 504 }); // Gateway Timeout
+    } catch (openaiError: any) {
+      // Clear the timeout if there was an error
+      clearTimeout(timeoutId);
+      
+      console.error('OpenAI analysis error:', openaiError);
+      
+      // Check if this was an abort error (timeout)
+      if (openaiError.name === 'AbortError' || openaiError.code === 'ETIMEDOUT') {
+        console.error('Analysis generation timed out after 2 minutes');
+        
+        await supabase
+          .from('transcriptions')
+          .update({
+            analysis_status: 'error',
+            error: 'Analysis generation timed out',
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', transcriptionId);
+          
+        return NextResponse.json({
+          success: false,
+          error: 'The analysis generation process timed out'
+        }, { status: 504 });
       }
       
-      throw error; // Re-throw for the outer catch block
+      // If something else went wrong with OpenAI
+      let errorMessage = openaiError.message || 'Error generating analysis';
+      
+      try {
+        await supabase
+          .from('transcriptions')
+          .update({
+            analysis_status: 'error',
+            error: errorMessage,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', transcriptionId);
+      } catch (updateError) {
+        console.error('Failed to update error status in database:', updateError);
+      }
+      
+      return NextResponse.json({
+        success: false,
+        error: 'Failed to generate analysis',
+        details: errorMessage
+      }, { status: 500 });
     }
+    
   } catch (error: any) {
-    console.error('Unexpected error in analyze API:', error);
-    return NextResponse.json({ 
+    console.error('Unexpected error in analyze-transcript API:', error);
+    
+    return NextResponse.json({
+      success: false,
       error: 'An unexpected error occurred',
-      details: error.message || 'Unknown error'
+      details: error.message
     }, { status: 500 });
   }
 }
+
+// Configure response options
+export const config = {
+  runtime: 'edge',
+  regions: ['iad1'], // Use your preferred Vercel region
+};
