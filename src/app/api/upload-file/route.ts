@@ -8,19 +8,47 @@ export async function POST(request: NextRequest) {
   try {
     // Get the current user session
     const supabase = await createSupabaseServerClient();
-    const { data: { session } } = await supabase.auth.getSession();
+    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    
+    if (sessionError) {
+      console.error('Server session error:', sessionError);
+      return NextResponse.json({ 
+        error: 'Authentication error', 
+        details: sessionError.message 
+      }, { status: 401 });
+    }
     
     if (!session) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      console.error('No session found in request');
+      return NextResponse.json({ 
+        error: 'Unauthorized: No valid session found',
+        authError: true
+      }, { status: 401 });
     }
     
     const userId = session.user.id;
+    console.log('Authenticated user:', userId);
     
     // Parse the request body
-    const { filename, contentType, size } = await request.json();
+    let body;
+    try {
+      body = await request.json();
+    } catch (error) {
+      console.error('Error parsing request body:', error);
+      return NextResponse.json({ 
+        error: 'Invalid request body - expected JSON',
+        details: error instanceof Error ? error.message : String(error)
+      }, { status: 400 });
+    }
+    
+    const { filename, contentType, size } = body;
     
     if (!filename || !contentType) {
-      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+      return NextResponse.json({ 
+        error: 'Missing required fields',
+        requiredFields: ['filename', 'contentType'],
+        receivedFields: Object.keys(body)
+      }, { status: 400 });
     }
     
     // Generate a unique filename
@@ -60,10 +88,18 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: error.message }, { status: 500 });
       }
       
+      if (!data || !data.signedUrl) {
+        return NextResponse.json({ 
+          error: 'Failed to generate signed URL - no URL returned',
+        }, { status: 500 });
+      }
+      
       // Get the public URL for the file (for after upload is complete)
       const { data: { publicUrl } } = supabase.storage
         .from(MEDIA_BUCKET)
         .getPublicUrl(storagePath);
+      
+      console.log('Successfully generated signed URL');
       
       // Return the signed URL and file information
       return NextResponse.json({
@@ -76,11 +112,17 @@ export async function POST(request: NextRequest) {
       });
     } catch (error: any) {
       console.error('Error in signed URL generation:', error);
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ 
+        error: 'Failed to generate signed URL',
+        details: error.message
+      }, { status: 500 });
     }
   } catch (error: any) {
     console.error('Unexpected error in upload-file API route:', error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ 
+      error: 'Server error processing upload request',
+      details: error.message
+    }, { status: 500 });
   }
 }
 

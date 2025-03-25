@@ -77,6 +77,39 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
   // Use a ref to track which transcriptions we've already attempted to analyze
   const analysisAttempts = useRef<Set<string>>(new Set());
 
+  // Function to handle authentication and get a fresh token
+  const getAuthToken = async (): Promise<string | null> => {
+    try {
+      // Get a fresh session token for authentication
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      
+      if (sessionError || !sessionData?.session) {
+        console.error('Session error:', sessionError);
+        return null;
+      }
+      
+      return sessionData.session.access_token;
+    } catch (error) {
+      console.error('Error getting auth token:', error);
+      return null;
+    }
+  };
+  
+  // Function to refresh the user's session
+  const refreshSession = async (): Promise<boolean> => {
+    try {
+      const { error } = await supabase.auth.refreshSession();
+      if (error) {
+        console.error('Failed to refresh session:', error);
+        return false;
+      }
+      return true;
+    } catch (error) {
+      console.error('Error refreshing session:', error);
+      return false;
+    }
+  };
+
   const handleFilesSelected = (event: React.ChangeEvent<HTMLInputElement> | File[]) => {
     // Handle both direct file array and input change event
     let files: File[] = [];
@@ -162,18 +195,34 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       console.log('Starting file upload to Supabase...');
       let fileInfo;
       
-      // Get the session for authentication
-      const session = await supabase.auth.getSession();
-      if (!session.data?.session) {
-        throw new Error('Authentication required');
+      // Get authentication token with retry
+      let accessToken = await getAuthToken();
+      
+      // If no token, try refreshing the session once
+      if (!accessToken) {
+        console.log('No valid token, attempting to refresh session...');
+        const refreshed = await refreshSession();
+        if (refreshed) {
+          accessToken = await getAuthToken();
+        }
       }
+      
+      if (!accessToken) {
+        setError('Authentication error: Please sign in again and try once more.');
+        clearInterval(progressInterval);
+        setIsUploading(false);
+        setIsSubmitting(false);
+        return;
+      }
+      
+      console.log('Got valid session token, proceeding with upload');
       
       // Step 1: Get a signed URL from our server
       const getSignedUrlResponse = await fetch('/api/upload-file', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.data.session.access_token}`
+          'Authorization': `Bearer ${accessToken}`
         },
         body: JSON.stringify({
           filename: selectedFile.name,
