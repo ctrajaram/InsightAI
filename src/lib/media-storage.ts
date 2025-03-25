@@ -35,6 +35,16 @@ export interface TranscriptionRecord {
       description: string;
       quotes: string[];
     }>;
+    topics?: Array<{
+      topic: string;
+      description: string;
+      quotes: string[];
+    }>;
+    keyInsights?: Array<{
+      insight: string;
+      description: string;
+      quotes: string[];
+    }>;
   };
   createdAt: string;
   fileName: string;

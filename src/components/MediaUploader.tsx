@@ -47,16 +47,19 @@ import {
   TranscriptionRecord, 
   uploadMediaFile,
   createTranscriptionRecord,
-  mapDbRecordToTranscriptionRecord
+  mapDbRecordToTranscriptionRecord,
+  UploadedFileInfo
 } from '@/lib/media-storage';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import Link from 'next/link';
+import { v4 as uuidv4 } from 'uuid';
 
 export function MediaUploader({ onComplete }: { onComplete?: (transcription: TranscriptionRecord) => void }) {
   const { supabase, user } = useSupabase();
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadMessage, setUploadMessage] = useState('');
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -66,13 +69,128 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
   const [analysisStatus, setAnalysisStatus] = useState<'pending' | 'processing' | 'completed' | 'error'>('pending');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [currentTranscriptionId, setCurrentTranscriptionId] = useState<string | null>(null);
-  const [updateMessage, setUpdateMessage] = useState<string>('');
+  const [updateMessage, setUpdateMessage] = useState('');
   const [showAuthPrompt, setShowAuthPrompt] = useState(false);
   const [loadingState, setLoadingState] = useState<'idle' | 'analyzing' | 'saving-analysis'>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Use a ref to track which transcriptions we've already attempted to analyze
   const analysisAttempts = useRef<Set<string>>(new Set());
+
+  // Constants for file chunking
+  const MAX_CHUNK_SIZE = 5 * 1024 * 1024; // 5MB chunks
+  const MAX_DIRECT_UPLOAD_SIZE = 15 * 1024 * 1024; // 15MB threshold for direct upload
+
+  // Function to handle large file uploads by chunking
+  const uploadLargeFile = async (file: File, userId: string): Promise<UploadedFileInfo> => {
+    setUploadMessage('Preparing to upload large file in chunks...');
+    
+    // Create a unique file ID for this upload
+    const fileId = uuidv4();
+    const fileName = file.name;
+    const fileType = file.type;
+    const fileSize = file.size;
+    const chunkSize = 5 * 1024 * 1024; // 5MB chunks
+    const totalChunks = Math.ceil(fileSize / chunkSize);
+    
+    try {
+      // Upload each chunk
+      for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+        const start = chunkIndex * chunkSize;
+        const end = Math.min(start + chunkSize, fileSize);
+        const chunk = file.slice(start, end);
+        
+        // Create FormData for the chunk
+        const formData = new FormData();
+        formData.append('chunk', chunk);
+        formData.append('chunkIndex', chunkIndex.toString());
+        formData.append('totalChunks', totalChunks.toString());
+        formData.append('fileId', fileId);
+        formData.append('fileName', fileName);
+        formData.append('fileType', fileType);
+        formData.append('userId', userId);
+        
+        // Update progress
+        const progress = Math.round(((chunkIndex + 1) / totalChunks) * 90); // Save 10% for finalization
+        setUploadProgress(progress);
+        setUploadMessage(`Uploading chunk ${chunkIndex + 1} of ${totalChunks}...`);
+        
+        // Upload the chunk
+        const response = await fetch('/api/upload-chunk', {
+          method: 'POST',
+          body: formData,
+        });
+        
+        // Clone the response before reading it
+        const responseClone = response.clone();
+        
+        // Handle response
+        if (!response.ok) {
+          let errorMessage;
+          try {
+            const errorData = await response.json();
+            errorMessage = errorData.error || 'Failed to upload chunk';
+          } catch (jsonError) {
+            // If JSON parsing fails, try to get text
+            errorMessage = await responseClone.text();
+          }
+          throw new Error(`Chunk upload failed: ${errorMessage}`);
+        }
+      }
+      
+      // All chunks uploaded, finalize the upload
+      setUploadMessage('Finalizing upload...');
+      setUploadProgress(95);
+      
+      const finalizeResponse = await fetch('/api/finalize-upload', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          fileId,
+          fileName,
+          fileType,
+          totalChunks,
+          userId,
+        }),
+      });
+      
+      // Clone the response before reading it
+      const finalizeResponseClone = finalizeResponse.clone();
+      
+      if (!finalizeResponse.ok) {
+        let errorMessage;
+        try {
+          const errorData = await finalizeResponse.json();
+          errorMessage = errorData.error || 'Failed to finalize upload';
+        } catch (jsonError) {
+          // If JSON parsing fails, try to get text
+          errorMessage = await finalizeResponseClone.text();
+        }
+        throw new Error(`Finalize upload failed: ${errorMessage}`);
+      }
+      
+      // Get the finalized file info
+      const fileInfo = await finalizeResponse.json();
+      setUploadProgress(100);
+      setUploadMessage('Upload complete!');
+      
+      // Return the file info in the expected format
+      return {
+        path: fileInfo.path,
+        url: fileInfo.url,
+        filename: fileName,
+        contentType: fileType,
+        size: fileSize
+      };
+    } catch (error: any) {
+      console.error('Error uploading large file:', error);
+      setUploadProgress(0);
+      setUploadMessage('');
+      throw new Error(`Failed to upload file: ${error.message}`);
+    }
+  };
 
   const handleFilesSelected = (event: React.ChangeEvent<HTMLInputElement> | File[]) => {
     // Handle both direct file array and input change event
@@ -157,12 +275,17 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       
       // Upload file to Supabase storage
       console.log('Starting file upload to Supabase...');
-      const fileInfo = await uploadMediaFile(selectedFile, user.id);
+      let fileInfo;
+      if (selectedFile.size > MAX_DIRECT_UPLOAD_SIZE) {
+        fileInfo = await uploadLargeFile(selectedFile, user.id);
+      } else {
+        fileInfo = await uploadMediaFile(selectedFile, user.id);
+      }
       console.log('File uploaded successfully, creating record...');
       
       // Create transcription record in database
       try {
-        const record = await createTranscriptionRecord(fileInfo, user.id);
+        const record = await createTranscriptionRecord(fileInfo as UploadedFileInfo, user.id);
         console.log('Transcription record created:', record.id);
         
         // Wait 2 seconds to make sure the record propagates through the database
@@ -334,7 +457,7 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       console.log('Verifying transcription status in database...');
       const { data: verifyData, error: verifyError } = await supabase
         .from('transcriptions')
-        .select('id, status, transcription_text')
+        .select('id, status')
         .eq('id', transcriptionId)
         .single();
         
@@ -1138,8 +1261,8 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
                             <h3 className="text-lg font-semibold">Topics</h3>
                           </div>
                           <div className="flex flex-wrap gap-2 mt-2">
-                            {transcriptionRecord.analysisData.topics.map((topic: string, index: number) => (
-                              <Badge key={index} className="bg-blue-100 text-blue-800 hover:bg-blue-200">{topic}</Badge>
+                            {transcriptionRecord.analysisData.topics.map((topicItem, index) => (
+                              <Badge key={index} className="bg-blue-100 text-blue-800 hover:bg-blue-200">{topicItem.topic}</Badge>
                             ))}
                           </div>
                         </div>
@@ -1152,8 +1275,8 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
                             <h3 className="text-lg font-semibold">Key Insights</h3>
                           </div>
                           <ul className="space-y-1 mt-2">
-                            {transcriptionRecord.analysisData.keyInsights.map((insight: string, index: number) => (
-                              <li key={index} className="text-sm">{insight}</li>
+                            {transcriptionRecord.analysisData.keyInsights.map((insightItem, index) => (
+                              <li key={index} className="text-sm">{insightItem.insight}</li>
                             ))}
                           </ul>
                         </div>
@@ -1319,8 +1442,8 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
                   <h3 className="text-lg font-semibold">Topics</h3>
                 </div>
                 <div className="flex flex-wrap gap-2 mt-2">
-                  {topics.map((topic: string, index: number) => (
-                    <Badge key={index} className="bg-blue-100 text-blue-800 hover:bg-blue-200">{topic}</Badge>
+                  {topics.map((topicItem, index) => (
+                    <Badge key={index} className="bg-blue-100 text-blue-800 hover:bg-blue-200">{topicItem.topic}</Badge>
                   ))}
                 </div>
               </div>
@@ -1333,8 +1456,8 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
                   <h3 className="text-lg font-semibold">Key Insights</h3>
                 </div>
                 <ul className="space-y-1 mt-2">
-                  {keyInsights.map((insight: string, index: number) => (
-                    <li key={index} className="text-sm">{insight}</li>
+                  {keyInsights.map((insightItem, index) => (
+                    <li key={index} className="text-sm">{insightItem.insight}</li>
                   ))}
                 </ul>
               </div>
@@ -1811,6 +1934,10 @@ interface AnalysisData {
     description: string;
     quotes: string[];
   }>;
-  topics?: string[];
-  keyInsights?: string[];
+  topics?: Array<{
+    topic: string;
+  }>;
+  keyInsights?: Array<{
+    insight: string;
+  }>;
 }
