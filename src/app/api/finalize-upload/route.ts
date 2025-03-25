@@ -119,7 +119,7 @@ export async function POST(request: NextRequest) {
     // Upload the reassembled file to Supabase Storage
     const filePath = `${userId}/${Date.now()}_${fileName}`;
     const { data: uploadData, error: uploadError } = await supabase.storage
-      .from('media')
+      .from('media-files')
       .upload(filePath, fileBuffer, {
         contentType: fileType,
         upsert: false
@@ -135,7 +135,7 @@ export async function POST(request: NextRequest) {
 
     // Get the public URL for the uploaded file
     const { data: { publicUrl } } = supabase.storage
-      .from('media')
+      .from('media-files')
       .getPublicUrl(filePath);
 
     // Clean up the temporary files
