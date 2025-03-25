@@ -727,7 +727,37 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
           throw new Error(errorMessage);
         }
         
-        return await response.json();
+        const analysisResponse = await response.json();
+        console.log('Analysis response:', analysisResponse);
+        
+        // Update the transcription record with the analysis data
+        if (analysisResponse.success && analysisResponse.analysis) {
+          console.log('Updating transcription record with analysis data:', analysisResponse.analysis);
+          
+          // Fetch the latest record from the database to ensure we have the most up-to-date data
+          const { data: updatedRecord } = await supabase
+            .from('transcriptions')
+            .select('*')
+            .eq('id', transcriptionId)
+            .single();
+            
+          if (updatedRecord) {
+            // Update the local state with the analysis data
+            setTranscriptionRecord(prev => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                analysisStatus: 'completed',
+                analysisData: analysisResponse.analysis
+              };
+            });
+            
+            console.log('Transcription record updated with analysis data');
+          }
+        }
+        
+        setIsAnalyzing(false);
+        return analysisResponse;
       }, 2, 2000, 'Analysis request');
     } catch (error: any) {
       console.error('Analysis error:', error);
@@ -888,10 +918,10 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
                     
                     {/* Display sentiment with improved type safety */}
                     <div className="flex flex-col gap-2">
-                      {/* Debug info to see the actual raw sentiment value */}
-                      <div className="text-xs text-gray-500 mb-1">
+                      {/* Debug info - comment out in production */}
+                      {/* <div className="text-xs text-gray-500 mb-1">
                         Raw sentiment data: {JSON.stringify(transcriptionRecord?.analysisData || {})}
-                      </div>
+                      </div> */}
                       
                       {(() => {
                         // Using IIFE for better type handling
@@ -910,6 +940,8 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
                           bgColorClass = 'bg-blue-100 text-blue-800';
                         } else if (sentimentString.includes('negative')) {
                           bgColorClass = 'bg-red-100 text-red-800';
+                        } else if (sentimentString.includes('mixed')) {
+                          bgColorClass = 'bg-amber-100 text-amber-800';
                         }
                         
                         return (

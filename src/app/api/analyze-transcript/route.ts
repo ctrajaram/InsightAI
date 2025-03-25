@@ -360,6 +360,27 @@ export async function POST(request: NextRequest) {
       let analysisData: AnalysisData;
       try {
         analysisData = safelyParseJSON(responseContent);
+        
+        // Ensure sentiment is properly formatted
+        if (analysisData.sentiment) {
+          // Normalize sentiment to one of the expected values
+          const sentimentLower = String(analysisData.sentiment).toLowerCase();
+          if (sentimentLower.includes('positive')) {
+            analysisData.sentiment = 'Positive';
+          } else if (sentimentLower.includes('negative')) {
+            analysisData.sentiment = 'Negative';
+          } else if (sentimentLower.includes('neutral')) {
+            analysisData.sentiment = 'Neutral';
+          } else if (sentimentLower.includes('mixed')) {
+            analysisData.sentiment = 'Mixed';
+          }
+          
+          console.log('Normalized sentiment:', analysisData.sentiment);
+        } else {
+          // If sentiment is missing, add a default value
+          analysisData.sentiment = 'Not determined';
+          console.log('Added default sentiment value');
+        }
       } catch (parseError) {
         console.error('Error parsing analysis data:', parseError);
         
