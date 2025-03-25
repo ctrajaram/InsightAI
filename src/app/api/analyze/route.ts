@@ -7,8 +7,8 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// Set a longer timeout for this route (10 minutes)
-export const maxDuration = 600; // 10 minutes in seconds
+// Set a longer timeout for this route (5 minutes)
+export const maxDuration = 300; // 5 minutes in seconds (maximum allowed on Vercel Pro plan)
 
 // Set a larger body size limit
 export const config = {
