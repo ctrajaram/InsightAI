@@ -79,6 +79,9 @@ const TRANSCRIPTION_TIMEOUT = 480000; // 8 minutes
 // Maximum size for direct transcription (10MB instead of 15MB to be safer)
 const MAX_DIRECT_TRANSCRIPTION_SIZE = 10 * 1024 * 1024;
 
+// Maximum file size allowed (400MB)
+const MAX_FILE_SIZE = 400 * 1024 * 1024;
+
 // Function to process large files in chunks
 async function processLargeAudioFile(url: string, openai: OpenAI, transcriptionId: string) {
   console.log('Processing large audio file in chunks');
@@ -169,11 +172,20 @@ async function processLargeAudioFile(url: string, openai: OpenAI, transcriptionI
         console.log('Starting background processing for full transcription');
         
         // Process the file in chunks if it's very large
-        if (contentLength > 20 * 1024 * 1024) { // If larger than 20MB
+        if (contentLength > MAX_DIRECT_TRANSCRIPTION_SIZE) { // If larger than our direct transcription limit
           console.log('File is very large, processing in multiple chunks');
           
-          // Create chunks of approximately 5MB each
-          const chunkSize = 5 * 1024 * 1024;
+          // For extremely large files, use larger chunks to reduce the number of API calls
+          let chunkSize = 5 * 1024 * 1024; // Default 5MB chunks
+          
+          // Adjust chunk size based on file size to keep number of chunks manageable
+          if (contentLength > 100 * 1024 * 1024) { // > 100MB
+            chunkSize = 10 * 1024 * 1024; // 10MB chunks
+          }
+          if (contentLength > 200 * 1024 * 1024) { // > 200MB
+            chunkSize = 20 * 1024 * 1024; // 20MB chunks
+          }
+          
           const numChunks = Math.ceil(contentLength / chunkSize);
           const chunks: string[] = [];
           
@@ -533,8 +545,8 @@ export async function POST(request: NextRequest) {
         try {
           await supabase.storage.createBucket('media-files', {
             public: true,
-            fileSizeLimit: 26214400, // 25MB in bytes
-            allowedMimeTypes: ['audio/mpeg', 'audio/mp3']
+            fileSizeLimit: 419430400, // 400MB in bytes
+            allowedMimeTypes: ['audio/mpeg', 'audio/mp3', 'video/mp4']
           });
           console.log('Successfully created media bucket');
         } catch (bucketError: unknown) {
@@ -620,8 +632,28 @@ export async function POST(request: NextRequest) {
       const fileResponse = await fetch(presignedUrlData.signedUrl, { method: 'HEAD' });
       const fileSize = parseInt(fileResponse.headers.get('content-length') || '0');
       
-      console.log(`File size: ${fileSize} bytes, Max allowed: ${MAX_DIRECT_TRANSCRIPTION_SIZE} bytes`);
+      console.log(`File size: ${fileSize} bytes, Max direct: ${MAX_DIRECT_TRANSCRIPTION_SIZE} bytes, Max allowed: ${MAX_FILE_SIZE} bytes`);
       
+      // Check if the file exceeds our maximum allowed size
+      if (fileSize > MAX_FILE_SIZE) {
+        console.log(`File is too large (${fileSize} bytes), exceeds maximum allowed size of ${MAX_FILE_SIZE} bytes`);
+        
+        await supabase
+          .from('transcriptions')
+          .update({ 
+            status: 'error', 
+            error: `File size (${(fileSize / (1024 * 1024)).toFixed(2)}MB) exceeds maximum allowed size of ${(MAX_FILE_SIZE / (1024 * 1024)).toFixed(2)}MB` 
+          })
+          .eq('id', transcriptionData.id);
+        
+        return NextResponse.json({
+          success: false,
+          error: 'File too large',
+          details: `The file size of ${(fileSize / (1024 * 1024)).toFixed(2)}MB exceeds the maximum allowed size of ${(MAX_FILE_SIZE / (1024 * 1024)).toFixed(2)}MB.`,
+        }, { status: 413 }); // 413 Payload Too Large
+      }
+      
+      // For files larger than direct transcription size but within our max limit, use chunked approach
       if (fileSize > MAX_DIRECT_TRANSCRIPTION_SIZE) {
         console.log(`File is too large for direct transcription (${fileSize} bytes), using chunked approach`);
         
@@ -849,7 +881,7 @@ export async function POST(request: NextRequest) {
 export const config = {
   api: {
     bodyParser: {
-      sizeLimit: '50mb',
+      sizeLimit: '100mb',
     },
     externalResolver: true, // This tells Next.js that this route will handle its own errors
   },
