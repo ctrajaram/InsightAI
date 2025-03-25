@@ -124,7 +124,7 @@ export async function POST(request: NextRequest) {
     // Check if this transcription belongs to the authenticated user
     const { data: transcription, error: transcriptionError } = await supabase
       .from('transcriptions')
-      .select('id, user_id, status, summary_status')
+      .select('id, user_id, status, summary_status, transcription_text')
       .eq('id', transcriptionId)
       .single();
     
@@ -132,7 +132,17 @@ export async function POST(request: NextRequest) {
       console.error('Error fetching transcription:', transcriptionError);
       return NextResponse.json({
         success: false,
-        error: 'Transcription not found'
+        error: 'Transcription not found',
+        details: transcriptionError.message
+      }, { status: 404 });
+    }
+    
+    if (!transcription) {
+      console.error(`Transcription with ID ${transcriptionId} not found`);
+      return NextResponse.json({
+        success: false,
+        error: 'Transcription not found',
+        details: `No transcription found with ID: ${transcriptionId}`
       }, { status: 404 });
     }
     

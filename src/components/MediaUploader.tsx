@@ -204,7 +204,11 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
   };
 
   const startTranscription = async (transcriptionId: string, mediaUrl: string) => {
-    if (!transcriptionId || !mediaUrl) return;
+    if (!transcriptionId || !mediaUrl) {
+      console.error('Missing required parameters for transcription:', { transcriptionId, mediaUrl });
+      setError('Missing required parameters for transcription. Please try again.');
+      return;
+    }
     
     try {
       setIsTranscribing(true);
@@ -428,6 +432,12 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
         throw new Error('Invalid transcription ID. Please try uploading again.');
       }
       
+      // Validate the transcription text
+      if (!transcriptionText || typeof transcriptionText !== 'string' || transcriptionText.trim() === '') {
+        console.error('Invalid or empty transcription text');
+        throw new Error('The transcription text is empty or invalid. Please try uploading again.');
+      }
+      
       // Verify the transcription exists in the database before making the API call
       console.log('Verifying transcription exists in database before summary API call...');
       const { data: existingRecord, error: recordError } = await supabase
@@ -468,7 +478,7 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ 
-          transcriptionId,
+          transcriptionId: finalTranscriptionId,
           transcriptionText,
           accessToken: accessToken
         }),

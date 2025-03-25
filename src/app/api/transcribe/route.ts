@@ -36,6 +36,42 @@ async function retryOperation<T>(
   throw lastError;
 }
 
+// Add a retry utility function at the top of the file after imports
+async function retryWithExponentialBackoff<T>(
+  operation: () => Promise<T>,
+  maxRetries: number = 3,
+  initialDelay: number = 1000,
+  factor: number = 2
+): Promise<T> {
+  let retries = 0;
+  let delay = initialDelay;
+
+  while (true) {
+    try {
+      return await operation();
+    } catch (error: any) {
+      retries++;
+      
+      // If we've reached max retries or it's not a network error, throw
+      if (retries >= maxRetries || 
+          !(error.code === 'ECONNRESET' || 
+            error.code === 'ETIMEDOUT' || 
+            error.message?.includes('network') || 
+            error.message?.includes('connection'))) {
+        throw error;
+      }
+      
+      console.log(`Retry ${retries}/${maxRetries} after ${delay}ms due to: ${error.message || error.code || 'Unknown error'}`);
+      
+      // Wait for the delay period
+      await new Promise(resolve => setTimeout(resolve, delay));
+      
+      // Increase delay for next retry
+      delay *= factor;
+    }
+  }
+}
+
 // Increase timeout for transcription to 5 minutes (300000 ms) instead of 3 minutes
 const TRANSCRIPTION_TIMEOUT = 300000; // 5 minutes
 
@@ -323,12 +359,23 @@ export async function POST(request: NextRequest) {
       
       try {
         // Fetch the file and prepare it for OpenAI
-        const audioResponse = await fetch(presignedUrlData.signedUrl, { signal: controller.signal });
-        if (!audioResponse.ok) {
-          throw new Error(`Failed to fetch audio file: ${audioResponse.status} ${audioResponse.statusText}`);
-        }
+        console.log('Attempting to download audio file from signed URL...');
         
-        const audioBlob = await audioResponse.blob();
+        // Use retry logic for fetching the audio file
+        const response = await retryWithExponentialBackoff(
+          async () => {
+            const fetchResponse = await fetch(presignedUrlData.signedUrl, { signal: controller.signal });
+            if (!fetchResponse.ok) {
+              throw new Error(`Failed to fetch audio file: ${fetchResponse.status} ${fetchResponse.statusText}`);
+            }
+            return fetchResponse;
+          },
+          3,  // 3 retries
+          2000, // Start with 2 second delay
+          2  // Double the delay each time
+        );
+        
+        const audioBlob = await response.blob();
         
         // Create a File object from the Blob
         const audioFile = new File(
@@ -337,10 +384,20 @@ export async function POST(request: NextRequest) {
           { type: audioBlob.type || 'audio/mpeg' }
         );
         
-        const transcription = await openai.audio.transcriptions.create({
-          file: audioFile,
-          model: 'whisper-1',
-        }, { signal: controller.signal });
+        console.log('Sending audio file to OpenAI for transcription...');
+        
+        // Use retry logic for the OpenAI API call
+        const transcription = await retryWithExponentialBackoff(
+          async () => {
+            return await openai.audio.transcriptions.create({
+              file: audioFile,
+              model: 'whisper-1',
+            }, { signal: controller.signal });
+          },
+          3,  // 3 retries
+          2000, // Start with 2 second delay
+          2  // Double the delay each time
+        );
         
         clearTimeout(timeoutId); // Clear the timeout if the request completes successfully
         
@@ -402,27 +459,46 @@ export async function POST(request: NextRequest) {
       } catch (error: any) {
         clearTimeout(timeoutId); // Clear the timeout
         
+        // Handle different types of errors
+        let errorMessage = 'Transcription failed';
+        let statusCode = 500;
+        
         if (error.name === 'AbortError' || error.code === 'ETIMEDOUT') {
           console.error('Request timed out after 5 minutes');
-          
-          // Update status to error
+          errorMessage = 'The transcription process timed out';
+          statusCode = 504; // Gateway Timeout
+        } else if (error.code === 'ECONNRESET') {
+          console.error('Connection reset error:', error);
+          errorMessage = 'Network connection error while transcribing';
+          statusCode = 503; // Service Unavailable
+        } else if (error.message?.includes('network') || error.message?.includes('connection')) {
+          console.error('Network error:', error);
+          errorMessage = 'Network error while transcribing';
+          statusCode = 503; // Service Unavailable
+        } else {
+          console.error('OpenAI transcription error:', error);
+        }
+        
+        // Update transcription record with error
+        try {
           await supabase
             .from('transcriptions')
             .update({
               status: 'error',
-              error: 'The transcription process timed out',
+              error: errorMessage,
               updated_at: new Date().toISOString()
             })
             .eq('id', transcriptionData.id);
-            
-          return NextResponse.json({ 
-            success: false,
-            error: 'The transcription process timed out',
-            details: 'Your audio file may be too large or the server is busy. Please try again later with a smaller file or during a less busy time.'
-          }, { status: 504 }); // Gateway Timeout
+        } catch (updateError) {
+          console.error('Error updating transcription status to error:', updateError);
         }
         
-        throw error; // Re-throw the error to be handled by the outer catch block
+        // Ensure the error response is valid JSON
+        return NextResponse.json({ 
+          success: false,
+          error: 'Transcription failed',
+          details: errorMessage
+        }, { status: statusCode });
       }
     } catch (openaiError: any) {
       console.error('OpenAI transcription error:', openaiError);
