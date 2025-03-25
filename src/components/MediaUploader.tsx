@@ -162,12 +162,17 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
             // Clone the response for potential error handling
             const responseClone = response.clone();
             
-            // Check if the request was successful
             if (!response.ok) {
               let errorMessage;
               try {
                 const errorData = await response.json();
                 errorMessage = errorData.error || `HTTP error ${response.status}`;
+                
+                // Handle RLS errors specifically
+                if (errorData.rlsError) {
+                  setError('Permission error: Please contact support to verify storage configuration');
+                  throw new Error('RLS configuration issue');
+                }
               } catch (jsonError) {
                 try {
                   errorMessage = await responseClone.text();
@@ -176,7 +181,6 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
                 }
               }
               
-              // Log the error and throw to trigger retry
               lastError = errorMessage;
               console.error(`Error uploading chunk ${chunkIndex} (attempt ${attempts}): ${errorMessage}`);
               throw new Error(errorMessage);
@@ -261,7 +265,6 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
               try {
                 errorMessage = await finalizeResponseClone.text();
               } catch (textError) {
-                console.error('Failed to read response body as text:', textError);
                 errorMessage = 'Failed to finalize upload';
               }
             }

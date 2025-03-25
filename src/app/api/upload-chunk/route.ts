@@ -140,9 +140,22 @@ export async function POST(request: NextRequest) {
         });
       
       if (uploadError) {
-        console.error(`Error uploading chunk ${chunkIndex} to Supabase Storage:`, uploadError);
+        console.error('Error uploading chunk:', uploadError);
+        
+        // Check if this is an RLS violation
+        if (uploadError.message.includes('row-level security policy')) {
+          return NextResponse.json(
+            { 
+              success: false, 
+              error: 'Permission denied. Please ensure the storage bucket has proper RLS policies configured.',
+              rlsError: true
+            },
+            { status: 403 }
+          );
+        }
+        
         return NextResponse.json(
-          { success: false, error: `Failed to upload chunk to storage: ${uploadError.message}` },
+          { success: false, error: `Failed to upload chunk: ${uploadError.message}` },
           { status: 500 }
         );
       }
