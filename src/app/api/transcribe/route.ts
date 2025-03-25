@@ -36,6 +36,9 @@ async function retryOperation<T>(
   throw lastError;
 }
 
+// Increase timeout for transcription to 5 minutes (300000 ms) instead of 3 minutes
+const TRANSCRIPTION_TIMEOUT = 300000; // 5 minutes
+
 export async function POST(request: NextRequest) {
   try {
     // Parse request body with error handling
@@ -316,7 +319,7 @@ export async function POST(request: NextRequest) {
     // Transcribe audio with timeout handling
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 180000); // 3 minute timeout for audio processing
+      const timeoutId = setTimeout(() => controller.abort(), TRANSCRIPTION_TIMEOUT);
       
       try {
         // Fetch the file and prepare it for OpenAI
@@ -400,14 +403,14 @@ export async function POST(request: NextRequest) {
         clearTimeout(timeoutId); // Clear the timeout
         
         if (error.name === 'AbortError' || error.code === 'ETIMEDOUT') {
-          console.error('Request timed out after 3 minutes');
+          console.error('Request timed out after 5 minutes');
           
           // Update status to error
           await supabase
             .from('transcriptions')
             .update({
               status: 'error',
-              error: 'Transcription process timed out',
+              error: 'The transcription process timed out',
               updated_at: new Date().toISOString()
             })
             .eq('id', transcriptionData.id);
@@ -415,7 +418,7 @@ export async function POST(request: NextRequest) {
           return NextResponse.json({ 
             success: false,
             error: 'The transcription process timed out',
-            details: JSON.stringify({ error: 'The transcription process timed out' })
+            details: 'Your audio file may be too large or the server is busy. Please try again later with a smaller file or during a less busy time.'
           }, { status: 504 }); // Gateway Timeout
         }
         
@@ -488,4 +491,5 @@ export const config = {
   },
   runtime: 'edge',
   regions: ['iad1'], // Use your preferred Vercel region
+  maxDuration: 300, // Increase maximum duration to 5 minutes (in seconds)
 };

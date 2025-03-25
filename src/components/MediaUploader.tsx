@@ -289,6 +289,11 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
           throw new Error('You must be logged in to transcribe media. Please sign in and try again.');
         }
         
+        // Check for timeout errors
+        if (response.status === 504 || errorMessage.includes('timeout') || errorMessage.includes('timed out')) {
+          throw new Error('The transcription process timed out. Your file may be too large or the server is busy. Please try again later or use a smaller file.');
+        }
+        
         throw new Error(errorMessage);
       }
       
