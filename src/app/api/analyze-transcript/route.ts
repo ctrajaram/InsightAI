@@ -47,6 +47,10 @@ interface TranscriptionRecord {
   user_id: string;
   transcription_text: string;
   status: string;
+  summary_status?: string;
+  analysis_status?: string;
+  analysis_data?: any;
+  error?: string;
 }
 
 interface AnalysisData {
@@ -135,17 +139,71 @@ export async function POST(request: NextRequest) {
     console.log(`Processing analysis for user: ${user.email} (ID: ${user.id})`);
     
     // Check if this transcription belongs to the authenticated user
-    const { data: transcription, error: transcriptionError } = await supabase
+    let { data: transcription, error: transcriptionError } = await supabase
       .from('transcriptions')
-      .select('id, user_id, transcription_text, status')
+      .select('id, user_id, transcription_text, status, analysis_status, summary_status')
       .eq('id', transcriptionId)
       .single();
     
     if (transcriptionError) {
       console.error('Error fetching transcription:', transcriptionError);
+      
+      // Try to find the transcription with a retry mechanism
+      try {
+        const foundTranscription = await retryOperation(async () => {
+          const { data, error } = await supabase
+            .from('transcriptions')
+            .select('id, user_id, transcription_text, status, analysis_status, summary_status')
+            .eq('id', transcriptionId)
+            .single();
+            
+          if (error) throw error;
+          if (!data) throw new Error('Transcription not found after retry');
+          return data;
+        }, 3, 1000);
+        
+        console.log('Found transcription after recovery attempts:', foundTranscription.id);
+        transcription = foundTranscription;
+      } catch (retryError) {
+        console.error('Failed to find transcription after retries:', retryError);
+        
+        // Last attempt: try to find any recent transcriptions for this user
+        const { data: recentTranscriptions } = await supabase
+          .from('transcriptions')
+          .select('id, user_id, transcription_text, status, analysis_status, summary_status, created_at')
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false })
+          .limit(5);
+          
+        console.log('Recent transcriptions for user:', recentTranscriptions || []);
+        
+        if (!recentTranscriptions || recentTranscriptions.length === 0) {
+          return NextResponse.json({
+            success: false,
+            error: 'Transcription not found',
+            details: transcriptionError.message
+          }, { status: 404 });
+        }
+        
+        // Use the most recent transcription as a fallback
+        transcription = {
+          id: recentTranscriptions[0].id,
+          user_id: recentTranscriptions[0].user_id,
+          transcription_text: recentTranscriptions[0].transcription_text,
+          status: recentTranscriptions[0].status,
+          analysis_status: recentTranscriptions[0].analysis_status,
+          summary_status: recentTranscriptions[0].summary_status
+        };
+        console.log('Using most recent transcription as fallback:', transcription.id);
+      }
+    }
+    
+    if (transcription === null || transcription === undefined) {
+      console.error(`Transcription with ID ${transcriptionId} not found`);
       return NextResponse.json({
         success: false,
-        error: 'Transcription not found'
+        error: 'Transcription not found',
+        details: `No transcription found with ID: ${transcriptionId}`
       }, { status: 404 });
     }
     

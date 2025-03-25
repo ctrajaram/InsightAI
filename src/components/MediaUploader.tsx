@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Card, CardContent, CardFooter, CardHeader, CardTitle, CardDescription } from './ui/card';
 import { Button } from './ui/button';
 import { 
@@ -61,6 +61,9 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
   const [currentTranscriptionId, setCurrentTranscriptionId] = useState<string | null>(null);
   const [updateMessage, setUpdateMessage] = useState<string>('');
   const [showAuthPrompt, setShowAuthPrompt] = useState(false);
+
+  // Use a ref to track which transcriptions we've already attempted to analyze
+  const analysisAttempts = useRef<Set<string>>(new Set());
 
   const handleFilesSelected = (event: React.ChangeEvent<HTMLInputElement> | File[]) => {
     // Handle both direct file array and input change event
@@ -370,9 +373,25 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       console.log('Starting automatic summarization...');
       try {
         await generateSummaryForTranscription(transcriptionId, data.text);
+        
+        // After summary is complete, automatically start analysis
+        try {
+          console.log('Starting automatic analysis...');
+          await requestAnalysis(transcriptionId);
+        } catch (analysisError) {
+          console.error('Failed to generate analysis:', analysisError);
+        }
       } catch (summaryError) {
         console.error('Failed to generate summary:', summaryError);
         // Continue with the process even if summarization fails
+        
+        // Try to start analysis anyway, even if summary failed
+        try {
+          console.log('Starting analysis despite summary failure...');
+          await requestAnalysis(transcriptionId);
+        } catch (analysisError) {
+          console.error('Failed to generate analysis after summary failure:', analysisError);
+        }
       }
       
       // Only call onComplete once after transcription is successful, if the callback exists
@@ -477,7 +496,7 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           transcriptionId: finalTranscriptionId,
           transcriptionText,
           accessToken: accessToken
@@ -585,7 +604,6 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
         await requestAnalysis(finalTranscriptionId);
       } catch (analysisError) {
         console.error('Failed to generate analysis:', analysisError);
-        // Continue with the process even if analysis fails
       }
       
       return data.summary.text;
@@ -604,226 +622,129 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
     }
   };
 
+  // Helper function to retry operations with exponential backoff
+  const retryOperation = async <T,>(
+    operation: () => Promise<T>,
+    maxRetries = 3,
+    initialDelay = 1000,
+    label = 'Operation'
+  ): Promise<T> => {
+    let lastError;
+    let delay = initialDelay;
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        return await operation();
+      } catch (error: any) {
+        lastError = error;
+        console.log(`${label} attempt ${attempt} failed, retrying in ${delay}ms...`, error.message);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        delay *= 1.5; // Exponential backoff
+      }
+    }
+    
+    console.error(`${label} failed after ${maxRetries} attempts`);
+    throw lastError;
+  };
+
   const requestAnalysis = async (transcriptionId: string) => {
+    // Add a flag to track if we've already attempted analysis for this ID
+    if (analysisAttempts.current.has(transcriptionId)) {
+      console.log(`Analysis already attempted for transcription ${transcriptionId}, skipping`);
+      return;
+    }
+    
+    // Mark this ID as attempted
+    analysisAttempts.current.add(transcriptionId);
+    
     try {
-      // Check authentication first
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) {
-        console.log('Authentication required for analysis - user is not logged in');
-        return; // Exit early without error if not authenticated
-      }
-      
-      console.log('Starting analysis with transcription ID:', transcriptionId);
-      console.log('Using stored transcription ID:', currentTranscriptionId);
-      
-      // Use the stored ID if available, otherwise use the passed ID
-      const finalTranscriptionId = currentTranscriptionId || transcriptionId;
-      
-      if (!finalTranscriptionId || typeof finalTranscriptionId !== 'string' || finalTranscriptionId.trim() === '') {
-        console.error('Invalid transcription ID:', finalTranscriptionId);
-        throw new Error('Invalid transcription ID. Please try uploading again.');
-      }
-      
       setIsAnalyzing(true);
-      setAnalysisStatus('processing');
       
-      console.log('Preparing to analyze transcription with ID:', finalTranscriptionId);
+      // Get the current session to retrieve the access token
+      const { data: { session } } = await supabase.auth.getSession();
       
-      // Verify the transcription exists in the database before making the API call
-      console.log('Verifying transcription exists in database before API call...');
+      if (!session || !session.access_token) {
+        throw new Error('Authentication required for analysis');
+      }
+      
+      // Verify the transcription exists before attempting analysis
       const { data: existingRecord, error: recordError } = await supabase
         .from('transcriptions')
         .select('*')
-        .eq('id', finalTranscriptionId)
+        .eq('id', transcriptionId)
         .single();
         
-      if (recordError) {
-        console.error('Error fetching transcription record:', recordError);
-        console.error('Error code:', recordError.code);
-        console.error('Error message:', recordError.message);
-        console.error('Error details:', recordError.details);
-        console.error('Transcription ID that failed:', finalTranscriptionId);
+      if (recordError || !existingRecord) {
+        console.error('Record not found before analysis API call:', recordError);
+        throw new Error('The transcription record could not be found for analysis');
+      }
+      
+      // Use the transcription text from the record if available
+      const transcriptionText = existingRecord.transcription_text || transcriptionRecord?.transcriptionText;
+      
+      if (!transcriptionText) {
+        console.error('No transcription text available for analysis');
+        throw new Error('No transcription text available for analysis');
+      }
+      
+      console.log('Sending analysis request for transcription:', transcriptionId);
+      
+      // Limit retries to prevent infinite loops
+      return await retryOperation(async () => {
+        const response = await fetch('/api/analyze-transcript', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            transcriptionId,
+            transcriptionText,
+            accessToken: session.access_token
+          })
+        });
         
-        // Try listing recent transcriptions to debug
-        console.log('Listing recent transcriptions to debug...');
-        const { data: recentTranscriptions } = await supabase
-          .from('transcriptions')
-          .select('id, created_at, status')
-          .order('created_at', { ascending: false })
-          .limit(5);
-          
-        console.log('Recent transcriptions:', recentTranscriptions);
-        
-        throw new Error(`Transcription record not found: ${recordError.message}`);
-      }
-      
-      if (!existingRecord) {
-        console.error('Transcription record not found, but no error returned');
-        console.error('Transcription ID that failed:', finalTranscriptionId);
-        throw new Error('The transcription record could not be found. Please try uploading again.');
-      }
-      
-      console.log('Found transcription record:', existingRecord);
-      console.log('Transcription text length:', existingRecord.transcription_text?.length || 0);
-      
-      // Ensure the transcription text exists - use snake_case field name from database
-      if (!existingRecord.transcription_text) {
-        console.error('Transcription text is empty for record:', existingRecord);
-        throw new Error('The transcription text is empty. Please try uploading again.');
-      }
-      
-      // Call the analysis API
-      console.log('Sending transcription to analysis API...');
-      console.log('Transcription ID being sent:', existingRecord.id); // Use ID directly from the database record
-      console.log('Transcription record from database:', existingRecord);
-      
-      // Get the session for authentication
-      const { data: sessionData } = await supabase.auth.getSession();
-      const accessToken = sessionData?.session?.access_token;
-      
-      if (!accessToken) {
-        console.error('No access token available for API call');
-        throw new Error('Authentication required. Please sign in and try again.');
-      }
-      
-      console.log('Using access token for API authentication');
-      
-      // Log the exact payload being sent to the API
-      const payload = { 
-        transcriptionId: existingRecord.id,
-        // Include the transcription text as a backup in case the API can't find it in the database
-        transcriptionText: existingRecord.transcription_text,
-        accessToken: accessToken
-      };
-      console.log('API request payload:', JSON.stringify(payload));
-      
-      const response = await fetch('/api/analyze-transcript', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-        // Add cache control to prevent caching
-        cache: 'no-store'
-      });
-      
-      // Log the response status
-      console.log('Analysis API response status:', response.status);
-      
-      if (!response.ok) {
-        // Clone the response so we can read it multiple times if needed
+        // Clone the response before attempting to read it
         const responseClone = response.clone();
         
-        let errorData;
-        try {
-          // First try to parse as JSON
-          errorData = await response.json();
-        } catch (jsonError) {
-          // If JSON parsing fails, try to get the text
+        if (!response.ok) {
+          let errorMessage = 'Failed to analyze transcription';
+          
           try {
-            const errorText = await responseClone.text();
-            console.error('Failed to parse error response as JSON:', errorText);
-            // Create a valid error object from the text
-            errorData = { 
-              error: 'Server error', 
-              details: errorText.substring(0, 100) // Only take first 100 chars to avoid huge errors
-            };
-          } catch (textError) {
-            console.error('Failed to read response body as text:', textError);
-            errorData = {
-              error: 'Server error',
-              details: 'Could not read server response'
-            };
+            const errorData = await response.json();
+            errorMessage = errorData.error || errorMessage;
+            console.error('Analysis error response:', errorData);
+          } catch (jsonError) {
+            try {
+              // If JSON parsing fails, try to get the text
+              const textError = await responseClone.text();
+              errorMessage = textError || errorMessage;
+              console.error('Analysis error text:', textError);
+            } catch (textError) {
+              console.error('Failed to read error response:', textError);
+            }
           }
-        }
-        
-        const errorMessage = errorData.error || 'Failed to analyze transcript';
-        
-        throw new Error(errorMessage);
-      }
-      
-      // Clone the response so we can read it multiple times if needed
-      const responseClone = response.clone();
-      
-      let data;
-      try {
-        data = await response.json();
-      } catch (jsonError) {
-        console.error('Failed to parse successful response as JSON');
-        try {
-          const responseText = await responseClone.text();
-          console.error('Raw response:', responseText.substring(0, 200)); // Log first 200 chars
-        } catch (textError) {
-          console.error('Could not read response body');
-        }
-        throw new Error('Invalid response from server. Please try again.');
-      }
-      
-      console.log('Analysis generated successfully:', data);
-      
-      // Save the analysis data to Supabase
-      if (data.analysis) {
-        console.log('Saving analysis data to Supabase...');
-        
-        const { error: updateError } = await supabase
-          .from('transcriptions')
-          .update({
-            analysis_status: 'completed',
-            analysis_data: data.analysis,
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', existingRecord.id);
           
-        if (updateError) {
-          console.error('Error saving analysis data to Supabase:', updateError);
-          // Continue anyway since we have the data in memory
-        } else {
-          console.log('Analysis data saved to Supabase successfully');
+          throw new Error(errorMessage);
         }
-      }
+        
+        return await response.json();
+      }, 2, 2000, 'Analysis request');
+    } catch (error: any) {
+      console.error('Analysis error:', error);
+      setError(`Analysis failed: ${error.message}`);
+      setIsAnalyzing(false);
       
-      // Update the transcription record with the analysis data
-      // Map from snake_case database fields to camelCase for the UI
-      if (transcriptionRecord) {
-        // Fetch the latest record from the database to ensure we have the most up-to-date data
-        const { data: updatedDbRecord, error: updateError } = await supabase
-          .from('transcriptions')
-          .select('*')
-          .eq('id', finalTranscriptionId)
-          .single();
-          
-        if (updateError) {
-          console.error('Error fetching updated record:', updateError);
-        } else if (updatedDbRecord) {
-          console.log('Retrieved updated record after analysis:', updatedDbRecord);
-          // Map the database record to our TypeScript interface
-          const updatedRecord = mapDbRecordToTranscriptionRecord(updatedDbRecord);
-          setTranscriptionRecord(updatedRecord);
-        } else {
-          // Fallback to just updating the analysis data if we can't get the full record
-          setTranscriptionRecord({
-            ...transcriptionRecord,
-            analysisStatus: 'completed' as const,
-            analysisData: data.analysis
-          });
-        }
-      }
-      
-      setAnalysisStatus('completed');
-      return data.analysis;
-    } catch (err: any) {
-      console.error('Analysis error:', err);
-      setAnalysisStatus('error');
+      // Update the record to show the error
       if (transcriptionRecord) {
         setTranscriptionRecord({
           ...transcriptionRecord,
           analysisStatus: 'error' as const,
-          error: err.message
+          error: error.message
         });
       }
-      throw err;
-    } finally {
-      setIsAnalyzing(false);
+      
+      // Don't throw the error further to prevent cascading failures
+      return null;
     }
   };
 
@@ -931,23 +852,12 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
               
               {transcriptionRecord && !transcriptionRecord.summaryText && (
                 <div className="mt-4 flex justify-end">
-                  <Button 
-                    onClick={() => generateSummaryForTranscription(transcriptionRecord.id, transcriptionRecord.transcriptionText)}
-                    disabled={isSummarizing}
-                    className="flex items-center bg-indigo-600 hover:bg-indigo-700"
-                  >
-                    {isSummarizing ? (
-                      <>
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Generating...
-                      </>
-                    ) : (
-                      <>
-                        <FileText className="mr-2 h-4 w-4" />
-                        Generate Summary
-                      </>
-                    )}
-                  </Button>
+                  {isSummarizing && (
+                    <div className="flex items-center text-indigo-600">
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Generating summary...
+                    </div>
+                  )}
                 </div>
               )}
             </TabsContent>
@@ -1063,7 +973,7 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
                   >
                     {isAnalyzing ? (
                       <>
-                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        <Loader2 className="h-4 w-4 animate-spin" />
                         Analyzing...
                       </>
                     ) : (
