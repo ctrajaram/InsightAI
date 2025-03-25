@@ -130,23 +130,65 @@ export async function POST(request: NextRequest) {
     
     if (transcriptionError) {
       console.error('Error fetching transcription:', transcriptionError);
-      return NextResponse.json({
-        success: false,
-        error: 'Transcription not found',
-        details: transcriptionError.message
-      }, { status: 404 });
-    }
-    
-    if (!transcription) {
+      console.log('Using provided transcription text as fallback since record not found in database');
+      
+      // Create a new transcription record if it doesn't exist
+      try {
+        const { data: newTranscription, error: createError } = await supabase
+          .from('transcriptions')
+          .insert({
+            id: transcriptionId,
+            user_id: user.id,
+            transcription_text: transcriptionText,
+            status: 'completed',
+            summary_status: 'processing',
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          })
+          .select()
+          .single();
+          
+        if (createError) {
+          console.error('Failed to create new transcription record:', createError);
+          // Continue with the provided text anyway
+        } else {
+          console.log('Created new transcription record:', newTranscription.id);
+        }
+      } catch (createError) {
+        console.error('Exception creating transcription record:', createError);
+        // Continue with the provided text anyway
+      }
+    } else if (!transcription) {
       console.error(`Transcription with ID ${transcriptionId} not found`);
-      return NextResponse.json({
-        success: false,
-        error: 'Transcription not found',
-        details: `No transcription found with ID: ${transcriptionId}`
-      }, { status: 404 });
-    }
-    
-    if (transcription.user_id !== user.id) {
+      console.log('Using provided transcription text as fallback since record not found in database');
+      
+      // Create a new transcription record if it doesn't exist
+      try {
+        const { data: newTranscription, error: createError } = await supabase
+          .from('transcriptions')
+          .insert({
+            id: transcriptionId,
+            user_id: user.id,
+            transcription_text: transcriptionText,
+            status: 'completed',
+            summary_status: 'processing',
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          })
+          .select()
+          .single();
+          
+        if (createError) {
+          console.error('Failed to create new transcription record:', createError);
+          // Continue with the provided text anyway
+        } else {
+          console.log('Created new transcription record:', newTranscription.id);
+        }
+      } catch (createError) {
+        console.error('Exception creating transcription record:', createError);
+        // Continue with the provided text anyway
+      }
+    } else if (transcription.user_id !== user.id) {
       console.error(`Unauthorized: User ${user.id} attempted to access transcription owned by ${transcription.user_id}`);
       return NextResponse.json({
         success: false,
