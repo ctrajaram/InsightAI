@@ -105,6 +105,9 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       }
       
       // Upload each chunk
+      let uploadedChunks = [];
+      let failedChunks = [];
+      
       for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
         const start = chunkIndex * chunkSize;
         const end = Math.min(start + chunkSize, fileSize);
@@ -126,47 +129,112 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
         setUploadProgress(progress);
         setUploadMessage(`Uploading chunk ${chunkIndex + 1} of ${totalChunks}...`);
         
-        // Upload the chunk
-        const response = await fetch('/api/upload-chunk', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${session.access_token}`
-          },
-          body: formData,
-        });
+        // Try up to 3 times per chunk
+        let chunkUploaded = false;
+        let attempts = 0;
+        let lastError = '';
         
-        // Clone the response before reading it
-        const responseClone = response.clone();
-        
-        // Handle response
-        if (!response.ok) {
-          let errorMessage;
+        while (!chunkUploaded && attempts < 3) {
+          attempts++;
           try {
-            const errorData = await response.json();
-            errorMessage = errorData.error || 'Failed to upload chunk';
-          } catch (jsonError) {
-            // If JSON parsing fails, try to get text
-            try {
-              errorMessage = await responseClone.text();
-            } catch (textError) {
-              console.error('Failed to read response body as text:', textError);
-              errorMessage = 'Failed to upload chunk';
+            // Upload the chunk
+            console.log(`Uploading chunk ${chunkIndex} (attempt ${attempts})`);
+            const response = await fetch('/api/upload-chunk', {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${session.access_token}`
+              },
+              body: formData,
+            });
+            
+            // Clone the response before reading it
+            const responseClone = response.clone();
+            
+            // Handle response
+            if (!response.ok) {
+              let errorMessage;
+              try {
+                const errorData = await response.json();
+                errorMessage = errorData.error || 'Failed to upload chunk';
+              } catch (jsonError) {
+                // If JSON parsing fails, try to get text
+                try {
+                  errorMessage = await responseClone.text();
+                } catch (textError) {
+                  console.error('Failed to read response body as text:', textError);
+                  errorMessage = 'Failed to upload chunk';
+                }
+              }
+              
+              // Check for specific error types
+              if (errorMessage.includes('Entity Too Large') || errorMessage.includes('FUNCTION_PAYLOAD_TOO_LARGE')) {
+                throw new Error(`File chunk is too large for server limits. Please try a smaller file or contact support.`);
+              }
+              
+              lastError = errorMessage;
+              console.error(`Chunk ${chunkIndex} upload failed (attempt ${attempts}):`, errorMessage);
+              
+              // Wait before retrying
+              await new Promise(resolve => setTimeout(resolve, 1000));
+              continue;
             }
+            
+            // Parse the success response
+            const responseData = await response.json();
+            console.log(`Chunk ${chunkIndex} upload response:`, responseData);
+            
+            if (!responseData.success) {
+              lastError = responseData.error || 'Unknown error';
+              console.error(`Chunk ${chunkIndex} reported failure:`, lastError);
+              
+              // Wait before retrying
+              await new Promise(resolve => setTimeout(resolve, 1000));
+              continue;
+            }
+            
+            // Successful upload
+            chunkUploaded = true;
+            uploadedChunks.push(chunkIndex);
+            console.log(`Successfully uploaded chunk ${chunkIndex} (${uploadedChunks.length}/${totalChunks})`);
+          } catch (error: any) {
+            lastError = error.message || 'Unknown error';
+            console.error(`Exception uploading chunk ${chunkIndex} (attempt ${attempts}):`, error);
+            
+            // Wait before retrying
+            await new Promise(resolve => setTimeout(resolve, 1000));
           }
-          
-          // Check for specific error types
-          if (errorMessage.includes('Entity Too Large') || errorMessage.includes('FUNCTION_PAYLOAD_TOO_LARGE')) {
-            throw new Error(`File chunk is too large for server limits. Please try a smaller file or contact support.`);
-          }
-          
-          throw new Error(`Chunk upload failed: ${errorMessage}`);
         }
         
+        // If the chunk failed after all attempts
+        if (!chunkUploaded) {
+          console.error(`Failed to upload chunk ${chunkIndex} after ${attempts} attempts. Last error: ${lastError}`);
+          failedChunks.push(chunkIndex);
+          
+          // If we have too many failed chunks, abort the upload
+          if (failedChunks.length > totalChunks / 3) { // If more than 1/3 of chunks failed
+            throw new Error(`Too many chunk uploads failed. Last error: ${lastError}`);
+          }
+        }
+      }
+      
+      // Check if we have any failed chunks
+      if (failedChunks.length > 0) {
+        throw new Error(`Failed to upload some chunks: ${failedChunks.join(', ')}. Please try again.`);
       }
       
       // All chunks uploaded, finalize the upload
       setUploadMessage('Finalizing upload...');
       setUploadProgress(95);
+      
+      console.log(`Attempting to finalize upload for ${uploadedChunks.length} chunks`);
+      console.log(`Finalize details:`, {
+        uploadId: fileId,
+        fileName,
+        fileType,
+        totalChunks,
+        uploadedChunks,
+        transcriptionId
+      });
       
       const finalizeResponse = await fetch('/api/finalize-upload', {
         method: 'POST',
@@ -179,7 +247,7 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
           fileName,
           fileType,
           totalChunks,
-          userId,
+          uploadedChunks, // Include the list of chunks we know were uploaded
           transcriptionId
         }),
       });
@@ -195,8 +263,7 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
         } catch (jsonError) {
           // If JSON parsing fails, try to get text
           try {
-            const errorText = await finalizeResponseClone.text();
-            errorMessage = errorText || 'Failed to finalize upload';
+            errorMessage = await finalizeResponseClone.text();
           } catch (textError) {
             console.error('Failed to read response body as text:', textError);
             errorMessage = 'Failed to finalize upload';
@@ -432,7 +499,7 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
           // First try to parse as JSON
           errorData = await response.json();
         } catch (jsonError) {
-          // If JSON parsing fails, try to get the text
+          // If JSON parsing fails, try to get text
           try {
             const errorText = await responseClone.text();
             console.error('Failed to parse error response as JSON:', errorText);
@@ -1402,29 +1469,21 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
             <ul className="space-y-2 mt-2">
               {pain_points.map((point, index) => (
                 <li key={index} className="text-sm">
-                  {typeof point === 'string' ? 
-                    <div className="flex items-start">
-                      <span className="inline-flex items-center justify-center h-5 w-5 rounded-full bg-amber-100 text-amber-800 text-xs font-medium mr-2">{index + 1}</span>
-                      <span>{point}</span>
-                    </div> : 
-                    (point && typeof point === 'object' && 'issue' in point ? 
-                      <div>
-                        <div className="flex items-start">
-                          <span className="inline-flex items-center justify-center h-5 w-5 rounded-full bg-amber-100 text-amber-800 text-xs font-medium mr-2">{index + 1}</span>
-                          <strong>{point.issue}</strong>
-                        </div>
-                        <p className="ml-7">{point.description}</p>
-                        {Array.isArray(point.quotes) && point.quotes.length > 0 && (
-                          <blockquote className="ml-7 pl-2 border-l-2 border-gray-300 mt-1 text-xs italic text-gray-600">
-                            "{point.quotes[0]}"
-                          </blockquote>
-                        )}
-                      </div> : 
+                  {typeof point === 'string' ? point : 
+                   (point && typeof point === 'object' && 'issue' in point ? 
+                    <div>
                       <div className="flex items-start">
                         <span className="inline-flex items-center justify-center h-5 w-5 rounded-full bg-amber-100 text-amber-800 text-xs font-medium mr-2">{index + 1}</span>
-                        <span>{JSON.stringify(point)}</span>
+                        <strong>{point.issue}</strong>
                       </div>
-                    )}
+                      <p className="ml-7">{point.description}</p>
+                      {Array.isArray(point.quotes) && point.quotes.length > 0 && (
+                        <blockquote className="ml-7 pl-2 border-l-2 border-gray-300 mt-1 text-xs italic text-gray-600">
+                          "{point.quotes[0]}"
+                        </blockquote>
+                      )}
+                    </div> : 
+                    JSON.stringify(point))}
                 </li>
               ))}
             </ul>

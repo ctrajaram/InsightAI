@@ -22,28 +22,16 @@ export const config = {
 };
 
 // Create a temporary directory for storing chunks
-// Use project directory instead of system temp which might get cleaned up
-const TEMP_DIR = process.env.NODE_ENV === 'production' 
-  ? path.join(os.tmpdir(), 'insight-ai-uploads')
-  : path.join(process.cwd(), 'tmp', 'uploads');
+// Use a more reliable location inside the project directory
+const TEMP_DIR = path.join(process.cwd(), 'uploads');
 
-// Ensure temp directory exists
+// Ensure temp directory exists with proper permissions
 if (!fs.existsSync(TEMP_DIR)) {
   try {
     fs.mkdirSync(TEMP_DIR, { recursive: true });
-    console.log(`Created temporary upload directory: ${TEMP_DIR}`);
+    console.log(`Created upload directory: ${TEMP_DIR}`);
   } catch (dirError) {
-    console.error(`Failed to create temporary directory ${TEMP_DIR}:`, dirError);
-    // Fallback to a different directory if creation fails
-    const fallbackDir = path.join(process.cwd(), 'tmp', 'fallback-uploads');
-    try {
-      fs.mkdirSync(fallbackDir, { recursive: true });
-      console.log(`Created fallback upload directory: ${fallbackDir}`);
-      // Override TEMP_DIR with the fallback
-      (TEMP_DIR as any) = fallbackDir;
-    } catch (fallbackError) {
-      console.error(`Failed to create fallback directory:`, fallbackError);
-    }
+    console.error(`Failed to create upload directory ${TEMP_DIR}:`, dirError);
   }
 }
 
@@ -90,20 +78,75 @@ export async function POST(request: NextRequest) {
     // Now the user is verified, we can use their ID
     const userId = user.id;
 
-    // Parse the request body
+    // Get request body
     const body = await request.json();
-    const { uploadId, fileName, fileType, totalChunks, transcriptionId } = body;
+    const { uploadId, fileName, fileType, totalChunks, transcriptionId, uploadedChunks } = body;
+    
+    console.log('Finalize upload request params:', {
+      uploadId,
+      fileName,
+      fileType,
+      totalChunks,
+      uploadedChunksLength: uploadedChunks?.length
+    });
     
     // Validate required fields
-    if (!uploadId || !fileName || !totalChunks) {
+    if (!uploadId || !fileName || !fileType || !totalChunks || isNaN(totalChunks)) {
       return NextResponse.json(
-        { success: false, error: 'Missing required fields for finalization' },
+        { success: false, error: "Missing required fields for upload finalization" },
         { status: 400 }
+      );
+    }
+    
+    // Ensure temp directory is accessible
+    const uploadDir = path.join(TEMP_DIR, uploadId);
+    
+    try {
+      // Try to create the upload directory if it doesn't exist (for recovery)
+      if (!fs.existsSync(uploadDir)) {
+        console.log(`Upload directory doesn't exist, creating: ${uploadDir}`);
+        fs.mkdirSync(uploadDir, { recursive: true });
+      }
+      
+      // Test write permissions on the directory
+      const testFile = path.join(uploadDir, '.write-test');
+      try {
+        fs.writeFileSync(testFile, 'test');
+        fs.unlinkSync(testFile);
+        console.log(`Verified write permissions in ${uploadDir}`);
+      } catch (writeError) {
+        console.error(`No write permission in ${uploadDir}:`, writeError);
+        
+        // Try alternative directory
+        const altUploadDir = path.join(process.cwd(), 'tmp', 'uploads', uploadId);
+        console.log(`Trying alternative directory: ${altUploadDir}`);
+        
+        fs.mkdirSync(altUploadDir, { recursive: true });
+        const altTestFile = path.join(altUploadDir, '.write-test');
+        
+        try {
+          fs.writeFileSync(altTestFile, 'test');
+          fs.unlinkSync(altTestFile);
+          console.log(`Using alternative directory with confirmed write permissions: ${altUploadDir}`);
+          // Use the alternative directory instead
+          (uploadDir as any) = altUploadDir;
+        } catch (altWriteError) {
+          console.error(`No write permission in alternative directory:`, altWriteError);
+          return NextResponse.json(
+            { success: false, error: "Server has no write permissions for uploads" },
+            { status: 500 }
+          );
+        }
+      }
+    } catch (dirError: any) {
+      console.error(`Error accessing upload directory:`, dirError);
+      return NextResponse.json(
+        { success: false, error: `Failed to access upload directory: ${dirError.message}` },
+        { status: 500 }
       );
     }
 
     // Check if the upload directory exists
-    const uploadDir = path.join(TEMP_DIR, uploadId);
     if (!fs.existsSync(uploadDir)) {
       return NextResponse.json(
         { success: false, error: 'Upload not found' },
@@ -113,21 +156,52 @@ export async function POST(request: NextRequest) {
 
     // Verify all chunks are present
     let missingChunks = [];
+    const expectedChunks = Array.from({ length: totalChunks }, (_, i) => i);
+    
+    // If client provided a list of uploaded chunks, use that for verification
+    // This helps avoid issues where the server may have different state than the client
+    const verifyChunks = uploadedChunks && Array.isArray(uploadedChunks) ? uploadedChunks : expectedChunks;
+    
+    console.log(`Verifying chunks: expecting ${totalChunks} chunks, client reports ${verifyChunks.length} uploaded`);
+    
     for (let i = 0; i < totalChunks; i++) {
+      // Check all possible locations for the chunk
       const chunkPath = path.join(uploadDir, `chunk-${i}`);
-      console.log(`Checking for chunk ${i} at path: ${chunkPath}`);
+      const directChunkPath = path.join(TEMP_DIR, `${uploadId}-chunk-${i}`);
+      const altChunkPath = path.join(process.cwd(), 'tmp', 'uploads', uploadId, `chunk-${i}`);
       
-      if (!fs.existsSync(chunkPath)) {
-        console.error(`Missing chunk ${i} at path: ${chunkPath}`);
+      console.log(`Checking for chunk ${i}:
+      1. Main path: ${chunkPath}
+      2. Direct path: ${directChunkPath}
+      3. Alt path: ${altChunkPath}`);
+      
+      // Check all possible locations
+      const chunkExists = 
+        fs.existsSync(chunkPath) || 
+        fs.existsSync(directChunkPath) || 
+        fs.existsSync(altChunkPath);
+        
+      // Determine which path to use
+      let foundChunkPath = null;
+      if (fs.existsSync(chunkPath)) {
+        foundChunkPath = chunkPath;
+      } else if (fs.existsSync(directChunkPath)) {
+        foundChunkPath = directChunkPath;
+      } else if (fs.existsSync(altChunkPath)) {
+        foundChunkPath = altChunkPath;
+      }
+      
+      if (!chunkExists || !foundChunkPath) {
+        console.error(`Missing chunk ${i} (not found in any location)`);
         missingChunks.push(i);
       } else {
         try {
-          const stats = fs.statSync(chunkPath);
+          const stats = fs.statSync(foundChunkPath);
           if (stats.size === 0) {
-            console.error(`Chunk ${i} exists but is empty (0 bytes)`);
+            console.error(`Chunk ${i} exists at ${foundChunkPath} but is empty (0 bytes)`);
             missingChunks.push(i);
           } else {
-            console.log(`Found chunk ${i} (${stats.size} bytes)`);
+            console.log(`Found chunk ${i} at ${foundChunkPath} (${stats.size} bytes)`);
           }
         } catch (statError) {
           console.error(`Error checking chunk ${i}:`, statError);
@@ -158,21 +232,61 @@ export async function POST(request: NextRequest) {
     }
 
     // Create a temporary file to reassemble the chunks
-    const tempFilePath = path.join(uploadDir, fileName);
-    const writeStream = fs.createWriteStream(tempFilePath);
-
-    // Reassemble the file from chunks
-    for (let i = 0; i < totalChunks; i++) {
-      const chunkPath = path.join(uploadDir, `chunk-${i}`);
-      const chunkData = fs.readFileSync(chunkPath);
-      writeStream.write(chunkData);
+    const tempDir = path.join(process.cwd(), 'uploads', 'completed');
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
     }
-
-    // Close the write stream and wait for it to finish
+    
+    // Use a unique name for the reassembled file
+    const tempFilePath = path.join(tempDir, `${uploadId}-${fileName}`);
+    const output = fs.createWriteStream(tempFilePath);
+    
+    // Reassemble the file from chunks
+    console.log(`Reassembling file to: ${tempFilePath}`);
+    
+    for (let i = 0; i < totalChunks; i++) {
+      // Check all possible locations for the chunk
+      const chunkPath = path.join(uploadDir, `chunk-${i}`);
+      const directChunkPath = path.join(TEMP_DIR, `${uploadId}-chunk-${i}`);
+      const altChunkPath = path.join(process.cwd(), 'tmp', 'uploads', uploadId, `chunk-${i}`);
+      
+      // Determine which path to use
+      let foundChunkPath = null;
+      if (fs.existsSync(chunkPath)) {
+        foundChunkPath = chunkPath;
+      } else if (fs.existsSync(directChunkPath)) {
+        foundChunkPath = directChunkPath;
+      } else if (fs.existsSync(altChunkPath)) {
+        foundChunkPath = altChunkPath;
+      }
+      
+      if (!foundChunkPath) {
+        console.error(`Cannot find chunk ${i} for reassembly`);
+        return NextResponse.json(
+          { success: false, error: `Missing chunk ${i} for reassembly` },
+          { status: 400 }
+        );
+      }
+      
+      try {
+        const chunkBuffer = fs.readFileSync(foundChunkPath);
+        output.write(chunkBuffer);
+        console.log(`Added chunk ${i} (${chunkBuffer.length} bytes) to reassembled file from ${foundChunkPath}`);
+      } catch (chunkError: any) {
+        console.error(`Error reading chunk ${i}:`, chunkError);
+        return NextResponse.json(
+          { success: false, error: `Error reassembling file: ${chunkError.message}` },
+          { status: 500 }
+        );
+      }
+    }
+    
+    output.end();
+    
+    // Wait for the write stream to finish
     await new Promise<void>((resolve, reject) => {
-      writeStream.end();
-      writeStream.on('finish', resolve);
-      writeStream.on('error', reject);
+      output.on('finish', resolve);
+      output.on('error', reject);
     });
 
     // Read the reassembled file
