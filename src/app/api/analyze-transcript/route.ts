@@ -87,6 +87,32 @@ function safelyParseJSON(text: string): any {
   }
 }
 
+// Helper functions for sentiment analysis
+function getMostFrequentSentiment(sentiments: (string | undefined)[]): string {
+  const filtered = sentiments.filter(s => s) as string[];
+  if (filtered.length === 0) return 'neutral';
+  
+  const counts = filtered.reduce((acc, sentiment) => {
+    acc[sentiment] = (acc[sentiment] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+  
+  // Find the sentiment with the highest count
+  return Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0] || 'neutral';
+}
+
+function combineExplanations(explanations: (string | undefined)[]): string {
+  // Join non-empty explanations
+  const filtered = explanations.filter(e => e) as string[];
+  if (filtered.length === 0) return 'No explanation available';
+  
+  // If there's only one, return it
+  if (filtered.length === 1) return filtered[0];
+  
+  // Otherwise create a summarized version
+  return `Summary of findings: ${filtered.join(' ')}`;
+}
+
 export async function POST(request: NextRequest) {
   try {
     // Parse request body with proper error handling
@@ -341,136 +367,151 @@ export async function POST(request: NextRequest) {
     
     // Set a timeout for the OpenAI request
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minute timeout
+    const timeoutId = setTimeout(() => controller.abort(), 240000); // 4 minute timeout
     
     try {
-      // Call OpenAI for analysis
-      const completion = await openai.chat.completions.create({
-        model: "gpt-4",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: `Please analyze the following transcript:\n\n${transcriptionText}` }
-        ],
-        temperature: 0.3,
-        max_tokens: 800
-      }, { signal: controller.signal });
+      // Check if transcript is too large and needs chunking
+      const MAX_CHUNK_SIZE = 12000; // About 12k tokens max
+      let analysisData: AnalysisData;
+      
+      if (transcriptionText.length > MAX_CHUNK_SIZE) {
+        console.log(`Transcript length (${transcriptionText.length} chars) exceeds chunk size limit. Implementing chunked analysis.`);
+        
+        // Split the transcript into chunks
+        const chunks = [];
+        for (let i = 0; i < transcriptionText.length; i += MAX_CHUNK_SIZE) {
+          chunks.push(transcriptionText.substring(i, i + MAX_CHUNK_SIZE));
+        }
+        console.log(`Split transcript into ${chunks.length} chunks for analysis`);
+        
+        // Process each chunk separately
+        const chunkResults: AnalysisData[] = [];
+        
+        for (const [index, chunk] of chunks.entries()) {
+          console.log(`Processing chunk ${index + 1}/${chunks.length}...`);
+          
+          try {
+            const chunkCompletion = await openai.chat.completions.create({
+              model: "gpt-3.5-turbo", // Use 3.5-turbo for faster processing of chunks
+              messages: [
+                { role: "system", content: systemPrompt },
+                { role: "user", content: `Please analyze the following part (${index + 1}/${chunks.length}) of a transcript:\n\n${chunk}` }
+              ],
+              temperature: 0.3,
+              max_tokens: 600
+            }, { signal: controller.signal });
+            
+            const responseText = chunkCompletion.choices[0].message.content || '';
+            const chunkData = safelyParseJSON(responseText) as AnalysisData;
+            
+            if (chunkData) {
+              chunkResults.push(chunkData);
+            }
+          } catch (chunkError: any) {
+            console.error(`Error processing chunk ${index + 1}:`, chunkError.message);
+            // Continue with other chunks even if one fails
+          }
+        }
+        
+        // Combine results from all chunks
+        analysisData = {
+          topics: Array.from(new Set(chunkResults.flatMap(r => r.topics || []))),
+          keyInsights: Array.from(new Set(chunkResults.flatMap(r => r.keyInsights || []))),
+          actionItems: Array.from(new Set(chunkResults.flatMap(r => r.actionItems || []))),
+          questions: Array.from(new Set(chunkResults.flatMap(r => r.questions || []))),
+          pain_points: Array.from(new Set(chunkResults.flatMap(r => r.pain_points || []))),
+          feature_requests: Array.from(new Set(chunkResults.flatMap(r => r.feature_requests || []))),
+          // For sentiment, use the most frequent sentiment across chunks
+          sentiment: getMostFrequentSentiment(chunkResults.map(r => r.sentiment)),
+          sentiment_explanation: combineExplanations(chunkResults.map(r => r.sentiment_explanation)),
+          toneAnalysis: combineExplanations(chunkResults.map(r => r.toneAnalysis))
+        };
+        
+        console.log('Combined analysis data from chunks');
+      } else {
+        // For smaller transcripts, process normally
+        const completion = await openai.chat.completions.create({
+          model: "gpt-4",
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: `Please analyze the following transcript:\n\n${transcriptionText}` }
+          ],
+          temperature: 0.3,
+          max_tokens: 800
+        }, { signal: controller.signal });
+        
+        // Parse the response from OpenAI
+        console.log('Raw response from OpenAI:', completion.choices[0].message.content);
+        const responseText = completion.choices[0].message.content || '';
+        analysisData = safelyParseJSON(responseText) as AnalysisData;
+      }
       
       // Clear the timeout if we get a response
       clearTimeout(timeoutId);
       
-      // Parse the response from OpenAI
-      try {
-        console.log('Raw response from OpenAI:', completion.choices[0].message.content);
-        
-        // Parse the JSON from the OpenAI response
-        const responseText = completion.choices[0].message.content || '';
-        const analysisData = JSON.parse(responseText);
-        
-        // Normalize sentiment values to ensure consistency
-        if (analysisData.sentiment) {
-          const sentiment = analysisData.sentiment.toLowerCase();
-          if (sentiment.includes('positive')) {
-            analysisData.sentiment = 'positive';
-          } else if (sentiment.includes('negative')) {
-            analysisData.sentiment = 'negative';
-          } else {
-            analysisData.sentiment = 'neutral';
-          }
-          console.log('Normalized sentiment:', analysisData.sentiment);
+      // Normalize sentiment values to ensure consistency
+      if (analysisData.sentiment) {
+        const sentiment = analysisData.sentiment.toLowerCase();
+        if (sentiment.includes('positive')) {
+          analysisData.sentiment = 'positive';
+        } else if (sentiment.includes('negative')) {
+          analysisData.sentiment = 'negative';
         } else {
-          // If sentiment is missing, add a default value
-          console.log('No sentiment found in response, adding default');
           analysisData.sentiment = 'neutral';
-          analysisData.sentiment_explanation = 'No clear sentiment detected in the transcript.';
         }
-        
-        // Ensure pain_points and feature_requests are arrays
-        if (!Array.isArray(analysisData.pain_points)) {
-          analysisData.pain_points = [];
-        }
-        
-        if (!Array.isArray(analysisData.feature_requests)) {
-          analysisData.feature_requests = [];
-        }
-        
-        // Stringify the analysis data for database storage
-        const analysisDataString = JSON.stringify(analysisData);
-        console.log('Processed analysis data:', analysisDataString);
-        
-        // Update the database with the analysis
-        try {
-          await retryOperation(async () => {
-            const { error } = await supabase
-              .from('transcriptions')
-              .update({
-                analysis_status: 'completed',
-                analysis_data: analysisData,
-                updated_at: new Date().toISOString()
-              })
-              .eq('id', transcriptionId);
-            
-            if (error) {
-              console.error('Error updating analysis:', error);
-              throw error;
-            }
-          });
-          
-          console.log('Successfully updated transcription with analysis');
-        } catch (updateError) {
-          console.error('Failed to update transcription with analysis after multiple retries:', updateError);
-          
-          // Even though the database update failed, we can still return the analysis to the client
-          console.log('Returning analysis to client despite database update failure');
-        }
-        
-        // Return the success response with analysis
-        return NextResponse.json({
-          success: true,
-          analysis: analysisData,
-          message: 'Analysis completed successfully'
-        });
-        
-      } catch (parseError) {
-        console.error('Error parsing analysis data:', parseError);
-        
-        // If parsing fails, use the raw text
-        const analysisData = {
-          summary: completion.choices[0].message.content
-        };
-        
-        // Update the database with the analysis
-        try {
-          await retryOperation(async () => {
-            const { error } = await supabase
-              .from('transcriptions')
-              .update({
-                analysis_status: 'completed',
-                analysis_data: analysisData,
-                updated_at: new Date().toISOString()
-              })
-              .eq('id', transcriptionId);
-            
-            if (error) {
-              console.error('Error updating analysis:', error);
-              throw error;
-            }
-          });
-          
-          console.log('Successfully updated transcription with analysis');
-        } catch (updateError) {
-          console.error('Failed to update transcription with analysis after multiple retries:', updateError);
-          
-          // Even though the database update failed, we can still return the analysis to the client
-          console.log('Returning analysis to client despite database update failure');
-        }
-        
-        // Return the success response with analysis
-        return NextResponse.json({
-          success: true,
-          analysis: analysisData,
-          message: 'Analysis completed successfully'
-        });
+        console.log('Normalized sentiment:', analysisData.sentiment);
+      } else {
+        // If sentiment is missing, add a default value
+        console.log('No sentiment found in response, adding default');
+        analysisData.sentiment = 'neutral';
+        analysisData.sentiment_explanation = 'No clear sentiment detected in the transcript.';
       }
+      
+      // Ensure pain_points and feature_requests are arrays
+      if (!Array.isArray(analysisData.pain_points)) {
+        analysisData.pain_points = [];
+      }
+      
+      if (!Array.isArray(analysisData.feature_requests)) {
+        analysisData.feature_requests = [];
+      }
+      
+      // Stringify the analysis data for database storage
+      const analysisDataString = JSON.stringify(analysisData);
+      console.log('Processed analysis data:', analysisDataString);
+      
+      // Update the database with the analysis
+      try {
+        await retryOperation(async () => {
+          const { error } = await supabase
+            .from('transcriptions')
+            .update({
+              analysis_status: 'completed',
+              analysis_data: analysisData,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', transcriptionId);
+          
+          if (error) {
+            console.error('Error updating analysis:', error);
+            throw error;
+          }
+        });
+        
+        console.log('Successfully updated transcription with analysis');
+      } catch (updateError) {
+        console.error('Failed to update transcription with analysis after multiple retries:', updateError);
+        
+        // Even though the database update failed, we can still return the analysis to the client
+        console.log('Returning analysis to client despite database update failure');
+      }
+      
+      // Return the success response with analysis
+      return NextResponse.json({
+        success: true,
+        analysis: analysisData,
+        message: 'Analysis completed successfully'
+      });
       
     } catch (openaiError: any) {
       // Clear the timeout if there was an error
@@ -480,7 +521,7 @@ export async function POST(request: NextRequest) {
       
       // Check if this was an abort error (timeout)
       if (openaiError.name === 'AbortError' || openaiError.code === 'ETIMEDOUT') {
-        console.error('Analysis generation timed out after 2 minutes');
+        console.error('Analysis generation timed out after 4 minutes');
         
         await supabase
           .from('transcriptions')
