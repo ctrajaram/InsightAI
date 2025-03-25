@@ -77,240 +77,6 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
   // Use a ref to track which transcriptions we've already attempted to analyze
   const analysisAttempts = useRef<Set<string>>(new Set());
 
-  // Constants for file chunking
-  const MAX_CHUNK_SIZE = 1 * 1024 * 1024; // 1MB chunks
-  const MAX_DIRECT_UPLOAD_SIZE = 15 * 1024 * 1024; // 15MB threshold for direct upload
-
-  // Function to handle large file uploads by chunking
-  const uploadLargeFile = async (file: File, userId: string): Promise<UploadedFileInfo> => {
-    try {
-      setIsUploading(true);
-      setUploadMessage('Preparing file...');
-      setUploadProgress(5);
-      
-      const fileSize = file.size;
-      const fileName = file.name;
-      const fileType = file.type;
-      
-      // Create a random file ID for this upload
-      const fileId = uuidv4();
-      
-      // Create a consistent transcription ID to use across all chunks
-      const transcriptionId = uuidv4();
-      
-      // Calculate chunk size - use 1MB chunks to avoid Vercel payload limits
-      const chunkSize = 1024 * 1024; // 1 MB chunks
-      const totalChunks = Math.ceil(fileSize / chunkSize);
-      
-      console.log(`Uploading ${fileName} (${fileSize} bytes) in ${totalChunks} chunks of ${chunkSize} bytes each`);
-      console.log(`File ID: ${fileId}, User ID: ${userId}`);
-      
-      // Get the session for authentication
-      const session = await supabase.auth.getSession();
-      if (!session.data?.session) {
-        throw new Error('Authentication required');
-      }
-      
-      // Upload chunks
-      const uploadedChunks: number[] = [];
-      const failedChunks: number[] = [];
-      let lastError = '';
-      
-      // Process chunks sequentially with retries
-      for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
-        // Update progress
-        setUploadProgress(Math.min(90, Math.floor((chunkIndex / totalChunks) * 90)));
-        setUploadMessage(`Uploading chunk ${chunkIndex + 1} of ${totalChunks}...`);
-        
-        // Calculate chunk boundaries
-        const start = chunkIndex * chunkSize;
-        const end = Math.min(start + chunkSize, fileSize);
-        const chunk = file.slice(start, end);
-        
-        // Create a FormData object for this chunk
-        const formData = new FormData();
-        formData.append('file', chunk);
-        formData.append('uploadId', fileId);
-        formData.append('chunkIndex', chunkIndex.toString());
-        formData.append('totalChunks', totalChunks.toString());
-        formData.append('fileName', fileName);
-        formData.append('fileType', fileType);
-        formData.append('fileSize', fileSize.toString());
-        formData.append('transcriptionId', transcriptionId);
-        
-        // Track if this chunk was uploaded successfully 
-        let chunkUploaded = false;
-        const maxRetries = 3;
-        let attempts = 0;
-        
-        // Try uploading this chunk up to maxRetries times
-        while (!chunkUploaded && attempts < maxRetries) {
-          attempts++;
-          
-          try {
-            // Use a simpler approach with better error handling
-            console.log(`Uploading chunk ${chunkIndex}, attempt ${attempts}`);
-            
-            const response = await fetch('/api/upload-chunk', {
-              method: 'POST',
-              headers: {
-                'Authorization': `Bearer ${session.data.session.access_token}`
-              },
-              body: formData,
-            });
-            
-            // Clone the response for potential error handling
-            const responseClone = response.clone();
-            
-            if (!response.ok) {
-              let errorMessage;
-              try {
-                const errorData = await response.json();
-                errorMessage = errorData.error || `HTTP error ${response.status}`;
-                
-                // Handle RLS errors specifically
-                if (errorData.rlsError) {
-                  setError('Permission error: Please contact support to verify storage configuration');
-                  throw new Error('RLS configuration issue');
-                }
-              } catch (jsonError) {
-                try {
-                  errorMessage = await responseClone.text();
-                } catch (textError) {
-                  errorMessage = `HTTP error ${response.status}`;
-                }
-              }
-              
-              lastError = errorMessage;
-              console.error(`Error uploading chunk ${chunkIndex} (attempt ${attempts}): ${errorMessage}`);
-              throw new Error(errorMessage);
-            }
-            
-            // If we got here, the chunk was uploaded successfully
-            console.log(`Successfully uploaded chunk ${chunkIndex}`);
-            chunkUploaded = true;
-            uploadedChunks.push(chunkIndex);
-          } catch (error: any) {
-            lastError = error.message;
-            console.error(`Exception uploading chunk ${chunkIndex} (attempt ${attempts}):`, error);
-            
-            // Wait before retrying - use exponential backoff
-            await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, attempts - 1)));
-          }
-        }
-        
-        // If the chunk failed after all attempts
-        if (!chunkUploaded) {
-          console.error(`Failed to upload chunk ${chunkIndex} after ${attempts} attempts. Last error: ${lastError}`);
-          failedChunks.push(chunkIndex);
-          
-          // If we have too many failed chunks, abort the upload
-          if (failedChunks.length > 3) { // Just abort after 3 failed chunks
-            throw new Error(`Too many chunk uploads failed. Last error: ${lastError}`);
-          }
-        }
-      }
-      
-      // All chunks uploaded, finalize the upload
-      setUploadMessage('Finalizing upload...');
-      setUploadProgress(95);
-      
-      console.log(`Attempting to finalize upload for ${uploadedChunks.length} chunks`);
-      console.log(`Finalize details:`, {
-        uploadId: fileId,
-        fileName,
-        fileType,
-        totalChunks,
-        uploadedChunks,
-        transcriptionId
-      });
-      
-      // Maximum retries for finalization
-      const maxFinalizeRetries = 3;
-      let finalizeAttempt = 0;
-      let finalizeSuccess = false;
-      let fileInfo;
-      let lastFinalizeError;
-      
-      while (finalizeAttempt < maxFinalizeRetries && !finalizeSuccess) {
-        finalizeAttempt++;
-        
-        try {
-          const finalizeResponse = await fetch('/api/finalize-upload', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${session.data.session.access_token}`
-            },
-            body: JSON.stringify({
-              uploadId: fileId,
-              fileName,
-              fileType,
-              totalChunks,
-              uploadedChunks, // Include the list of chunks we know were uploaded
-              transcriptionId
-            }),
-          });
-          
-          // Clone the response before reading it
-          const finalizeResponseClone = finalizeResponse.clone();
-          
-          if (!finalizeResponse.ok) {
-            let errorMessage;
-            try {
-              const errorData = await finalizeResponse.json();
-              errorMessage = errorData.error || 'Failed to finalize upload';
-            } catch (jsonError) {
-              // If JSON parsing fails, try to get text
-              try {
-                errorMessage = await finalizeResponseClone.text();
-              } catch (textError) {
-                errorMessage = 'Failed to finalize upload';
-              }
-            }
-            throw new Error(`Finalize upload failed: ${errorMessage}`);
-          }
-          
-          // Get the finalized file info
-          fileInfo = await finalizeResponse.json();
-          finalizeSuccess = true;
-          
-        } catch (error: any) {
-          console.error(`Finalize attempt ${finalizeAttempt} failed:`, error);
-          lastFinalizeError = error.message;
-          
-          // Wait before retrying
-          if (finalizeAttempt < maxFinalizeRetries) {
-            setUploadMessage(`Retrying finalization (attempt ${finalizeAttempt + 1}/${maxFinalizeRetries})...`);
-            await new Promise(resolve => setTimeout(resolve, 2000));
-          }
-        }
-      }
-      
-      if (!finalizeSuccess) {
-        throw new Error(`Failed to finalize upload after ${maxFinalizeRetries} attempts. Last error: ${lastFinalizeError}`);
-      }
-      
-      setUploadProgress(100);
-      setUploadMessage('Upload complete!');
-      
-      // Return the file info in the expected format
-      return {
-        path: fileInfo.filePath || fileInfo.path,
-        url: fileInfo.fileUrl || fileInfo.url,
-        transcription: fileInfo.transcription,
-        filename: fileName,
-        contentType: fileType,
-        size: fileSize
-      };
-    } catch (error: any) {
-      console.error('Error uploading large file:', error);
-      setUploadProgress(0);
-      setUploadMessage('');
-      throw new Error(`Failed to upload file: ${error.message}`);
-    }
-  };
-
   const handleFilesSelected = (event: React.ChangeEvent<HTMLInputElement> | File[]) => {
     // Handle both direct file array and input change event
     let files: File[] = [];
@@ -395,11 +161,57 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       // Upload file to Supabase storage
       console.log('Starting file upload to Supabase...');
       let fileInfo;
-      if (selectedFile.size > MAX_DIRECT_UPLOAD_SIZE) {
-        fileInfo = await uploadLargeFile(selectedFile, user.id);
-      } else {
-        fileInfo = await uploadMediaFile(selectedFile, user.id);
+      
+      // Use server-side upload API for all files
+      const formData = new FormData();
+      formData.append('file', selectedFile);
+      
+      // Get the session for authentication
+      const session = await supabase.auth.getSession();
+      if (!session.data?.session) {
+        throw new Error('Authentication required');
       }
+      
+      // Send the file to our server-side API
+      const response = await fetch('/api/upload-file', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${session.data.session.access_token}`
+        },
+        body: formData
+      });
+      
+      // Clone the response for potential error handling
+      const responseClone = response.clone();
+      
+      if (!response.ok) {
+        let errorMessage;
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.error || `HTTP error ${response.status}`;
+          
+          // Handle specific errors
+          if (errorData.rlsError) {
+            setError('Permission error: Please contact support to verify storage configuration');
+            throw new Error('RLS configuration issue');
+          }
+          
+          if (errorData.bucketError) {
+            setError('Storage configuration error: Media storage bucket not found');
+            throw new Error('Bucket configuration issue');
+          }
+        } catch (jsonError) {
+          try {
+            errorMessage = await responseClone.text();
+          } catch (textError) {
+            errorMessage = `HTTP error ${response.status}`;
+          }
+        }
+        
+        throw new Error(errorMessage);
+      }
+      
+      fileInfo = await response.json();
       console.log('File uploaded successfully, creating record...');
       
       // Create transcription record in database
@@ -1791,7 +1603,7 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
           transcriptionId,
           analysisData: formattedData,
           accessToken
-        })
+        }),
       });
       
       // Clone the response before reading
@@ -1859,7 +1671,7 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
             <div className="flex items-center mb-4 p-4 bg-blue-50 rounded-md border border-blue-100 text-blue-700">
               <div className="mr-3 flex-shrink-0">
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
-                  <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a.75.75 0 000 1.5h.253a.25.25 0 01.244.304l-.459 2.066A1.75 1.75 0 0010.747 15H11a.75.75 0 000-1.5h-.253a.25.25 0 01-.244-.304l.459-2.066A1.75 1.75 0 009.253 9H9z" clipRule="evenodd" />
+                  <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zM9 9a.75.75 0 000 1.5h.253a.25.25 0 01.244.304l-.459 2.066A1.75 1.75 0 0010.747 15H11a.75.75 0 000-1.5h-.253a.25.25 0 01-.244-.304l.459-2.066A1.75 1.75 0 009.253 9H9z" clipRule="evenodd" />
                 </svg>
               </div>
               <p>You need to be signed in to upload and analyze interviews.</p>

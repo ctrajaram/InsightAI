@@ -83,93 +83,59 @@ export function mapDbRecordToTranscriptionRecord(dbRecord: any): TranscriptionRe
 export async function uploadMediaFile(file: File, userId: string): Promise<UploadedFileInfo> {
   const supabase = createSupabaseBrowserClient();
   
-  // Check if media-files bucket exists, create if not
-  const { data: buckets } = await supabase.storage.listBuckets();
-  const mediaFilesBucket = buckets?.find(b => b.name === MEDIA_BUCKET);
+  // Generate a unique filename to avoid collisions
+  const timestamp = Date.now();
+  const safeFileName = file.name.replace(/[^a-zA-Z0-9\._-]/g, '_');
+  const uniqueFileName = `${timestamp}-${safeFileName}`;
   
-  if (!mediaFilesBucket) {
-    console.log('Media bucket not found, creating it...');
-    try {
-      await supabase.storage.createBucket(MEDIA_BUCKET, {
-        public: true,
-        fileSizeLimit: 26214400, // 25MB in bytes
-        allowedMimeTypes: ['audio/mpeg', 'audio/mp3']
-      });
-      console.log('Successfully created media bucket');
-    } catch (error) {
-      console.error('Error creating media bucket:', error);
-      // Continue anyway, the bucket might already exist or be created by another request
-    }
-  }
+  // Store in user's folder for proper permissions
+  const storagePath = `${userId}/${uniqueFileName}`;
   
-  // Create a unique filename with timestamp and user ID for organization
-  const fileExt = file.name.split('.').pop();
-  const timestamp = new Date().toISOString().replace(/[:.-]/g, '_');
-  const uniqueFilename = `${userId}/${timestamp}_${userId.substring(0, 8)}_${uuidv4().substring(0, 8)}.${fileExt}`;
-  
-  console.log(`Uploading file to bucket ${MEDIA_BUCKET} with path ${uniqueFilename}`);
-  
-  // Upload the file with retry logic
-  let uploadAttempts = 0;
-  let data;
-  let error;
-  
-  while (uploadAttempts < 3) {
-    uploadAttempts++;
+  try {
+    console.log(`Attempting to upload file to ${MEDIA_BUCKET}/${storagePath}`);
     
-    const result = await supabase.storage
+    // Upload file to Supabase Storage
+    const { data, error } = await supabase.storage
       .from(MEDIA_BUCKET)
-      .upload(uniqueFilename, file, {
+      .upload(storagePath, file, {
         cacheControl: '3600',
-        contentType: file.type,
-        upsert: true, // Changed to true for better reliability
+        upsert: false,
       });
     
-    data = result.data;
-    error = result.error;
-    
-    if (!error) break;
-    
-    console.error(`Upload attempt ${uploadAttempts} failed:`, error.message);
-    
-    if (uploadAttempts < 3) {
-      console.log(`Retrying upload (attempt ${uploadAttempts + 1})...`);
-      await new Promise(resolve => setTimeout(resolve, 1000));
+    if (error) {
+      console.error('Error uploading file to Supabase Storage:', error);
+      
+      // Check if this is a bucket not found error
+      if (error.message.includes('bucket') && error.message.includes('not found')) {
+        throw new Error(`Storage bucket '${MEDIA_BUCKET}' not found. Please create this bucket in your Supabase dashboard.`);
+      }
+      
+      // Check if this is an RLS policy error
+      if (error.message.includes('row-level security policy')) {
+        throw new Error(`Permission denied. Please ensure the storage bucket has proper RLS policies configured for user uploads.`);
+      }
+      
+      throw new Error(`Failed to upload file: ${error.message}`);
     }
-  }
-  
-  if (error) {
-    console.error('All upload attempts failed:', error.message);
-    throw new Error(`Failed to upload file: ${error.message}`);
-  }
-  
-  // Verify the file exists in storage
-  const { data: fileInfo, error: fileError } = await supabase.storage
-    .from(MEDIA_BUCKET)
-    .list(userId);
     
-  if (fileError) {
-    console.error('Error verifying file upload:', fileError);
-  } else {
-    const filename = uniqueFilename.split('/').pop();
-    const fileExists = fileInfo?.some(f => f.name === filename);
-    console.log(`File verification: ${fileExists ? 'File exists in storage' : 'File not found in storage'}`);
+    // Get the public URL for the file
+    const { data: { publicUrl } } = supabase.storage
+      .from(MEDIA_BUCKET)
+      .getPublicUrl(storagePath);
+    
+    console.log('File uploaded successfully with public URL:', publicUrl);
+    
+    return {
+      path: storagePath,
+      url: publicUrl,
+      filename: file.name,
+      contentType: file.type,
+      size: file.size,
+    };
+  } catch (error: any) {
+    console.error('Error in uploadMediaFile:', error);
+    throw error; // Re-throw to preserve the specific error message
   }
-  
-  // Get the public URL for the file
-  const { data: { publicUrl } } = supabase.storage
-    .from(MEDIA_BUCKET)
-    .getPublicUrl(uniqueFilename);
-  
-  console.log('File uploaded successfully with public URL:', publicUrl);
-  
-  return {
-    path: uniqueFilename,
-    url: publicUrl,
-    filename: file.name,
-    contentType: file.type,
-    size: file.size
-  };
 }
 
 /**
