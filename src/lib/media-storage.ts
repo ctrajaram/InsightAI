@@ -4,6 +4,9 @@ import { createSupabaseBrowserClient } from './supabase';
 // Define bucket name for media files
 export const MEDIA_BUCKET = 'media-files';
 
+// Try alternative bucket names if needed
+const ALTERNATIVE_BUCKET_NAMES = ['mediafiles', 'media_files', 'MediaFiles'];
+
 // Interface for uploaded file information
 export interface UploadedFileInfo {
   path: string;
@@ -88,65 +91,92 @@ export async function uploadMediaFile(file: File, userId: string): Promise<Uploa
   // Store in user's folder for proper permissions
   const storagePath = `${userId}/${uniqueFileName}`;
   
+  console.log(`Attempting to upload file to ${MEDIA_BUCKET}/${storagePath}`);
+  
+  // Try with the primary bucket name first
+  let uploadResult = await tryUploadToStorage(supabase, MEDIA_BUCKET, storagePath, file);
+  
+  // If primary bucket fails, try alternative bucket names
+  if (!uploadResult.success && uploadResult.error?.includes('bucket')) {
+    console.log('Primary bucket upload failed, trying alternatives...');
+    
+    for (const bucketName of ALTERNATIVE_BUCKET_NAMES) {
+      console.log(`Trying alternative bucket: ${bucketName}`);
+      uploadResult = await tryUploadToStorage(supabase, bucketName, storagePath, file);
+      
+      if (uploadResult.success) {
+        console.log(`Successfully uploaded to alternative bucket: ${bucketName}`);
+        break;
+      }
+    }
+  }
+  
+  // If all attempts failed, throw the error
+  if (!uploadResult.success) {
+    throw new Error(uploadResult.error || 'Failed to upload file to any storage bucket');
+  }
+  
+  // Get the public URL for the file from the successful bucket
+  const { data: { publicUrl } } = supabase.storage
+    .from(uploadResult.bucketName || MEDIA_BUCKET)
+    .getPublicUrl(storagePath);
+  
+  console.log('File uploaded successfully with public URL:', publicUrl);
+  
+  return {
+    path: storagePath,
+    url: publicUrl,
+    filename: file.name,
+    contentType: file.type,
+    size: file.size,
+  };
+}
+
+// Helper function to try uploading to a specific bucket
+async function tryUploadToStorage(
+  supabase: any, 
+  bucketName: string, 
+  storagePath: string, 
+  file: File
+): Promise<{ success: boolean; error?: string; bucketName?: string }> {
   try {
-    console.log(`Attempting to upload file to ${MEDIA_BUCKET}/${storagePath}`);
+    // First try to list files to check permissions
+    const { data: listData, error: listError } = await supabase.storage
+      .from(bucketName)
+      .list(storagePath.split('/')[0], { limit: 1 });
     
-    // First check if the bucket exists
-    const { data: buckets, error: bucketsError } = await supabase.storage.listBuckets();
-    
-    if (bucketsError) {
-      console.error('Error listing buckets:', bucketsError);
-      throw new Error(`Failed to check storage buckets: ${bucketsError.message}`);
+    if (listError) {
+      console.log(`Permission check failed for bucket '${bucketName}':`, listError.message);
+      // Continue anyway, as this might just be a policy that prevents listing but allows uploads
+    } else {
+      console.log(`Successfully listed files in bucket '${bucketName}'`);
     }
     
-    const bucketExists = buckets?.some((bucket) => bucket.name === MEDIA_BUCKET);
-    
-    if (!bucketExists) {
-      console.error(`Bucket '${MEDIA_BUCKET}' does not exist`);
-      throw new Error(`Storage bucket '${MEDIA_BUCKET}' not found. Please create this bucket in your Supabase dashboard.`);
-    }
-    
-    // Upload file to Supabase Storage
     const { data, error } = await supabase.storage
-      .from(MEDIA_BUCKET)
+      .from(bucketName)
       .upload(storagePath, file, {
         cacheControl: '3600',
         upsert: true, // Use upsert to avoid conflicts
       });
     
     if (error) {
-      console.error('Error uploading file to Supabase Storage:', error);
+      console.error(`Error uploading to bucket '${bucketName}':`, error.message);
       
-      // Check if this is a bucket not found error
-      if (error.message.includes('bucket') && error.message.includes('not found')) {
-        throw new Error(`Storage bucket '${MEDIA_BUCKET}' not found. Please create this bucket in your Supabase dashboard.`);
-      }
-      
-      // Check if this is an RLS policy error
+      // Check for specific error types
       if (error.message.includes('row-level security policy')) {
-        throw new Error(`Permission denied. Please ensure the storage bucket has proper RLS policies configured for user uploads.`);
+        return { 
+          success: false, 
+          error: `Permission denied. Please ensure the storage bucket has proper RLS policies configured for user uploads.` 
+        };
       }
       
-      throw new Error(`Failed to upload file: ${error.message}`);
+      return { success: false, error: error.message };
     }
     
-    // Get the public URL for the file
-    const { data: { publicUrl } } = supabase.storage
-      .from(MEDIA_BUCKET)
-      .getPublicUrl(storagePath);
-    
-    console.log('File uploaded successfully with public URL:', publicUrl);
-    
-    return {
-      path: storagePath,
-      url: publicUrl,
-      filename: file.name,
-      contentType: file.type,
-      size: file.size,
-    };
+    return { success: true, bucketName };
   } catch (error: any) {
-    console.error('Error in uploadMediaFile:', error);
-    throw error; // Re-throw to preserve the specific error message
+    console.error(`Exception uploading to bucket '${bucketName}':`, error);
+    return { success: false, error: error.message };
   }
 }
 
