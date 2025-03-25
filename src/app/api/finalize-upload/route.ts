@@ -1,39 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { cookies } from 'next/headers';
-import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { promisify } from 'util';
-import fetch from 'node-fetch';
+import fs from 'fs';
+import { randomUUID } from 'crypto';
+import { Writable } from 'stream';
 
-// Disable fetch cache
-export const fetchCache = 'force-no-store';
-export const dynamic = 'force-dynamic';
-
-// Set appropriate size limits for the API route
+// Define response configuration
 export const config = {
   api: {
     bodyParser: {
-      sizeLimit: '2mb', // This endpoint only receives metadata, not file content
+      sizeLimit: '2mb', // For metadata only, not the actual file
     },
-    externalResolver: true,
+    responseLimit: '2mb',
   },
 };
-
-// Create a temporary directory for storing chunks
-// Use a more reliable location inside the project directory
-const TEMP_DIR = path.join(process.cwd(), 'uploads');
-
-// Ensure temp directory exists with proper permissions
-if (!fs.existsSync(TEMP_DIR)) {
-  try {
-    fs.mkdirSync(TEMP_DIR, { recursive: true });
-    console.log(`Created upload directory: ${TEMP_DIR}`);
-  } catch (dirError) {
-    console.error(`Failed to create upload directory ${TEMP_DIR}:`, dirError);
-  }
-}
 
 export async function POST(request: NextRequest) {
   try {
@@ -61,7 +42,7 @@ export async function POST(request: NextRequest) {
       );
     }
     
-    // Create a client for authentication
+    // Create a client for authentication and storage
     const supabase = createClient(supabaseUrl, supabaseKey);
     
     // Verify the user's token
@@ -78,280 +59,211 @@ export async function POST(request: NextRequest) {
     // Now the user is verified, we can use their ID
     const userId = user.id;
 
-    // Get request body
+    // Parse the request body
     const body = await request.json();
-    const { uploadId, fileName, fileType, totalChunks, transcriptionId, uploadedChunks } = body;
     
-    console.log('Finalize upload request params:', {
-      uploadId,
-      fileName,
-      fileType,
-      totalChunks,
-      uploadedChunksLength: uploadedChunks?.length
-    });
+    // Extract and validate required fields
+    const { uploadId, fileName, fileType, totalChunks, uploadedChunks, transcriptionId } = body;
     
-    // Validate required fields
-    if (!uploadId || !fileName || !fileType || !totalChunks || isNaN(totalChunks)) {
+    if (!uploadId || !fileName || !fileType || !totalChunks) {
+      console.error('Missing required fields:', { uploadId, fileName, fileType, totalChunks });
       return NextResponse.json(
-        { success: false, error: "Missing required fields for upload finalization" },
+        { success: false, error: 'Missing required fields for finalization' },
         { status: 400 }
       );
     }
     
-    // Ensure temp directory is accessible
-    const uploadDir = path.join(TEMP_DIR, uploadId);
+    // Validate total chunks
+    if (typeof totalChunks !== 'number' || totalChunks <= 0) {
+      console.error('Invalid totalChunks:', totalChunks);
+      return NextResponse.json(
+        { success: false, error: 'Invalid totalChunks value' },
+        { status: 400 }
+      );
+    }
     
-    try {
-      // Try to create the upload directory if it doesn't exist (for recovery)
-      if (!fs.existsSync(uploadDir)) {
-        console.log(`Upload directory doesn't exist, creating: ${uploadDir}`);
-        fs.mkdirSync(uploadDir, { recursive: true });
-      }
-      
-      // Test write permissions on the directory
-      const testFile = path.join(uploadDir, '.write-test');
-      try {
-        fs.writeFileSync(testFile, 'test');
-        fs.unlinkSync(testFile);
-        console.log(`Verified write permissions in ${uploadDir}`);
-      } catch (writeError) {
-        console.error(`No write permission in ${uploadDir}:`, writeError);
-        
-        // Try alternative directory
-        const altUploadDir = path.join(process.cwd(), 'tmp', 'uploads', uploadId);
-        console.log(`Trying alternative directory: ${altUploadDir}`);
-        
-        fs.mkdirSync(altUploadDir, { recursive: true });
-        const altTestFile = path.join(altUploadDir, '.write-test');
-        
-        try {
-          fs.writeFileSync(altTestFile, 'test');
-          fs.unlinkSync(altTestFile);
-          console.log(`Using alternative directory with confirmed write permissions: ${altUploadDir}`);
-          // Use the alternative directory instead
-          (uploadDir as any) = altUploadDir;
-        } catch (altWriteError) {
-          console.error(`No write permission in alternative directory:`, altWriteError);
-          return NextResponse.json(
-            { success: false, error: "Server has no write permissions for uploads" },
-            { status: 500 }
-          );
-        }
-      }
-    } catch (dirError: any) {
-      console.error(`Error accessing upload directory:`, dirError);
-      return NextResponse.json(
-        { success: false, error: `Failed to access upload directory: ${dirError.message}` },
-        { status: 500 }
-      );
-    }
-
-    // Check if the upload directory exists
-    if (!fs.existsSync(uploadDir)) {
-      return NextResponse.json(
-        { success: false, error: 'Upload not found' },
-        { status: 404 }
-      );
-    }
-
-    // Verify all chunks are present
+    console.log(`Starting finalization for uploadId: ${uploadId}, fileName: ${fileName}, totalChunks: ${totalChunks}`);
+    
+    // Verify all chunks are present in Supabase Storage
     let missingChunks = [];
     const expectedChunks = Array.from({ length: totalChunks }, (_, i) => i);
     
     // If client provided a list of uploaded chunks, use that for verification
-    // This helps avoid issues where the server may have different state than the client
     const verifyChunks = uploadedChunks && Array.isArray(uploadedChunks) ? uploadedChunks : expectedChunks;
     
     console.log(`Verifying chunks: expecting ${totalChunks} chunks, client reports ${verifyChunks.length} uploaded`);
     
+    // Check each chunk exists in storage
     for (let i = 0; i < totalChunks; i++) {
-      // Check all possible locations for the chunk
-      const chunkPath = path.join(uploadDir, `chunk-${i}`);
-      const directChunkPath = path.join(TEMP_DIR, `${uploadId}-chunk-${i}`);
-      const altChunkPath = path.join(process.cwd(), 'tmp', 'uploads', uploadId, `chunk-${i}`);
+      const chunkPath = `chunks/${uploadId}/chunk-${i}`;
       
-      console.log(`Checking for chunk ${i}:
-      1. Main path: ${chunkPath}
-      2. Direct path: ${directChunkPath}
-      3. Alt path: ${altChunkPath}`);
+      // Check if the chunk exists in storage
+      const { data: chunkData, error: chunkError } = await supabase.storage
+        .from('transcriptions')
+        .download(chunkPath);
       
-      // Check all possible locations
-      const chunkExists = 
-        fs.existsSync(chunkPath) || 
-        fs.existsSync(directChunkPath) || 
-        fs.existsSync(altChunkPath);
-        
-      // Determine which path to use
-      let foundChunkPath = null;
-      if (fs.existsSync(chunkPath)) {
-        foundChunkPath = chunkPath;
-      } else if (fs.existsSync(directChunkPath)) {
-        foundChunkPath = directChunkPath;
-      } else if (fs.existsSync(altChunkPath)) {
-        foundChunkPath = altChunkPath;
-      }
-      
-      if (!chunkExists || !foundChunkPath) {
-        console.error(`Missing chunk ${i} (not found in any location)`);
+      if (chunkError || !chunkData) {
+        console.error(`Missing chunk ${i} (not found in storage):`, chunkError?.message || 'No data');
         missingChunks.push(i);
       } else {
-        try {
-          const stats = fs.statSync(foundChunkPath);
-          if (stats.size === 0) {
-            console.error(`Chunk ${i} exists at ${foundChunkPath} but is empty (0 bytes)`);
-            missingChunks.push(i);
-          } else {
-            console.log(`Found chunk ${i} at ${foundChunkPath} (${stats.size} bytes)`);
-          }
-        } catch (statError) {
-          console.error(`Error checking chunk ${i}:`, statError);
+        // Check if the chunk has content
+        const size = chunkData.size;
+        if (size === 0) {
+          console.error(`Chunk ${i} exists in storage but is empty (0 bytes)`);
           missingChunks.push(i);
+        } else {
+          console.log(`Found chunk ${i} in storage (${size} bytes)`);
         }
       }
     }
     
     if (missingChunks.length > 0) {
-      // List contents of upload directory for debugging
-      try {
-        const dirContents = fs.readdirSync(uploadDir);
-        console.log(`Contents of ${uploadDir}:`, dirContents);
-      } catch (readError) {
-        console.error(`Error reading upload directory:`, readError);
-      }
-      
+      console.error(`Missing chunks: ${missingChunks.join(', ')}`);
       return NextResponse.json(
-        { 
-          success: false, 
-          error: `Missing chunks: ${missingChunks.join(', ')}`,
-          uploadId,
-          totalChunks,
-          uploadDir: uploadDir.replace(/\\/g, '/') // For debugging
-        },
+        { success: false, error: `Missing chunks: ${missingChunks.join(', ')}` },
         { status: 400 }
       );
     }
-
-    // Create a temporary file to reassemble the chunks
-    const tempDir = path.join(process.cwd(), 'uploads', 'completed');
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true });
-    }
     
-    // Use a unique name for the reassembled file
-    const tempFilePath = path.join(tempDir, `${uploadId}-${fileName}`);
-    const output = fs.createWriteStream(tempFilePath);
+    console.log('All chunks verified. Proceeding with reassembly.');
+    
+    // Create a buffer to hold the reassembled file
+    let fileBuffer = Buffer.alloc(0);
     
     // Reassemble the file from chunks
-    console.log(`Reassembling file to: ${tempFilePath}`);
-    
     for (let i = 0; i < totalChunks; i++) {
-      // Check all possible locations for the chunk
-      const chunkPath = path.join(uploadDir, `chunk-${i}`);
-      const directChunkPath = path.join(TEMP_DIR, `${uploadId}-chunk-${i}`);
-      const altChunkPath = path.join(process.cwd(), 'tmp', 'uploads', uploadId, `chunk-${i}`);
+      const chunkPath = `chunks/${uploadId}/chunk-${i}`;
       
-      // Determine which path to use
-      let foundChunkPath = null;
-      if (fs.existsSync(chunkPath)) {
-        foundChunkPath = chunkPath;
-      } else if (fs.existsSync(directChunkPath)) {
-        foundChunkPath = directChunkPath;
-      } else if (fs.existsSync(altChunkPath)) {
-        foundChunkPath = altChunkPath;
-      }
+      // Download the chunk from storage
+      const { data: chunkData, error: chunkError } = await supabase.storage
+        .from('transcriptions')
+        .download(chunkPath);
       
-      if (!foundChunkPath) {
-        console.error(`Cannot find chunk ${i} for reassembly`);
+      if (chunkError || !chunkData) {
+        console.error(`Error downloading chunk ${i}:`, chunkError?.message || 'No data');
         return NextResponse.json(
-          { success: false, error: `Missing chunk ${i} for reassembly` },
-          { status: 400 }
-        );
-      }
-      
-      try {
-        const chunkBuffer = fs.readFileSync(foundChunkPath);
-        output.write(chunkBuffer);
-        console.log(`Added chunk ${i} (${chunkBuffer.length} bytes) to reassembled file from ${foundChunkPath}`);
-      } catch (chunkError: any) {
-        console.error(`Error reading chunk ${i}:`, chunkError);
-        return NextResponse.json(
-          { success: false, error: `Error reassembling file: ${chunkError.message}` },
+          { success: false, error: `Error downloading chunk ${i}: ${chunkError?.message || 'Unknown error'}` },
           { status: 500 }
         );
       }
+      
+      // Convert the chunk to buffer and append it
+      const chunkBuffer = Buffer.from(await chunkData.arrayBuffer());
+      fileBuffer = Buffer.concat([fileBuffer, chunkBuffer]);
+      console.log(`Added chunk ${i} (${chunkBuffer.length} bytes) to reassembled file`);
     }
     
-    output.end();
-    
-    // Wait for the write stream to finish
-    await new Promise<void>((resolve, reject) => {
-      output.on('finish', resolve);
-      output.on('error', reject);
-    });
-
-    // Read the reassembled file
-    const fileBuffer = fs.readFileSync(tempFilePath);
     console.log(`Reassembled file size: ${fileBuffer.length} bytes`);
-
-    // Upload the reassembled file to Supabase Storage using direct REST API
-    // This approach bypasses RLS policies completely
-    const filePath = `${userId}/${Date.now()}_${fileName}`;
-    const storageEndpoint = `${supabaseUrl}/storage/v1/object/media-files/${filePath}`;
     
-    try {
-      // Upload file using fetch to bypass RLS
-      // Use service key for authorization if available, otherwise use the user's token
-      const authToken = process.env.SUPABASE_SERVICE_KEY || token;
-      
-      const uploadResponse = await fetch(storageEndpoint, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${authToken}`,
-          'Content-Type': fileType,
-          'x-upsert': 'false'
-        },
-        body: fileBuffer
-      });
-      
-      if (!uploadResponse.ok) {
-        const errorText = await uploadResponse.text();
-        console.error('Error uploading file via REST API:', errorText);
-        return NextResponse.json(
-          { success: false, error: `Failed to upload file: ${errorText}` },
-          { status: uploadResponse.status }
-        );
-      }
-      
-      // Get the public URL
-      const publicUrl = `${supabaseUrl}/storage/v1/object/public/media-files/${filePath}`;
-      
-      // Clean up the temporary files
-      try {
-        fs.rmSync(uploadDir, { recursive: true, force: true });
-      } catch (cleanupError) {
-        console.error('Error cleaning up temporary files:', cleanupError);
-        // Continue despite cleanup errors
-      }
-
-      // Return success with file info
-      return NextResponse.json({
-        success: true,
-        message: 'File upload completed successfully',
-        path: filePath,
-        url: publicUrl,
-        mediaUrl: publicUrl, // Keep for backwards compatibility
-        filename: fileName,
+    // Generate a unique filename for the complete file
+    const safeFileName = fileName.replace(/[^a-zA-Z0-9\._-]/g, '_');
+    const uniqueFileName = `${Date.now()}-${safeFileName}`;
+    const storagePath = `${userId}/${uniqueFileName}`;
+    
+    // Upload the complete file to Supabase Storage
+    const { data: uploadData, error: uploadError } = await supabase.storage
+      .from('transcriptions')
+      .upload(storagePath, fileBuffer, {
         contentType: fileType,
-        size: fileBuffer.length,
-        transcriptionId
+        upsert: false,
       });
-    } catch (error: any) {
-      console.error('Error uploading file:', error);
+    
+    if (uploadError) {
+      console.error('Error uploading complete file to storage:', uploadError);
       return NextResponse.json(
-        { success: false, error: error.message || 'Failed to upload file' },
+        { success: false, error: `Failed to upload complete file: ${uploadError.message}` },
         { status: 500 }
       );
     }
+    
+    console.log(`Uploaded complete file to ${storagePath}`);
+    
+    // Get public URL for the file
+    const { data: { publicUrl } } = supabase.storage
+      .from('transcriptions')
+      .getPublicUrl(storagePath);
+    
+    // Create a record in the transcriptions table
+    let transcriptionData;
+    try {
+      // Use the provided transcriptionId if available, otherwise generate a new one
+      const finalTranscriptionId = transcriptionId || randomUUID();
+      
+      // Insert the transcription record
+      const { data, error } = await supabase
+        .from('transcriptions')
+        .insert([
+          {
+            id: finalTranscriptionId,
+            user_id: userId,
+            filename: fileName,
+            filetype: fileType,
+            status: 'pending',
+            media_path: storagePath,
+            media_url: publicUrl,
+            upload_id: uploadId,
+          }
+        ])
+        .select()
+        .single();
+      
+      if (error) {
+        console.error('Error creating transcription record:', error);
+        return NextResponse.json(
+          { success: false, error: `Failed to create transcription record: ${error.message}` },
+          { status: 500 }
+        );
+      }
+      
+      transcriptionData = data;
+      console.log('Created transcription record:', data.id);
+    } catch (dbError: any) {
+      console.error('Error creating transcription record:', dbError);
+      return NextResponse.json(
+        { success: false, error: `Failed to create transcription record: ${dbError.message}` },
+        { status: 500 }
+      );
+    }
+    
+    // Clean up the temporary chunks (optional, can be done asynchronously)
+    try {
+      for (let i = 0; i < totalChunks; i++) {
+        const chunkPath = `chunks/${uploadId}/chunk-${i}`;
+        
+        supabase.storage
+          .from('transcriptions')
+          .remove([chunkPath])
+          .then(({ error }) => {
+            if (error) {
+              console.error(`Error removing chunk ${i}:`, error);
+            }
+          });
+      }
+      
+      // Also remove the metadata file
+      supabase.storage
+        .from('transcriptions')
+        .remove([`chunks/${uploadId}/metadata.json`])
+        .then(({ error }) => {
+          if (error) {
+            console.error('Error removing metadata file:', error);
+          }
+        });
+      
+      console.log(`Initiated cleanup of temporary chunks for upload ${uploadId}`);
+    } catch (cleanupError) {
+      console.error('Error during cleanup:', cleanupError);
+      // Non-fatal, continue even if cleanup fails
+    }
+    
+    // Return success with the transcription data
+    return NextResponse.json({
+      success: true,
+      message: 'File upload complete',
+      transcription: transcriptionData,
+      filePath: storagePath,
+      fileUrl: publicUrl,
+    });
   } catch (error: any) {
     console.error('Error finalizing upload:', error);
     return NextResponse.json(

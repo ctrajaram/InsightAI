@@ -1,38 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
-import { cookies } from 'next/headers';
 import { createClient } from '@supabase/supabase-js';
-import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import fs from 'fs';
 
-// Disable fetch cache
-export const fetchCache = 'force-no-store';
-export const dynamic = 'force-dynamic';
-
-// Set a lower size limit for the API route
+// Define response configuration
 export const config = {
   api: {
-    bodyParser: {
-      sizeLimit: '2mb', // Reduced from default to match our chunk size
-    },
-    externalResolver: true,
+    bodyParser: false,
+    responseLimit: '2mb', // Limit the response size to 2MB
   },
 };
-
-// Create a temporary directory for storing chunks
-// Use a more reliable location inside the project directory
-const TEMP_DIR = path.join(process.cwd(), 'uploads');
-
-// Ensure temp directory exists with proper permissions
-if (!fs.existsSync(TEMP_DIR)) {
-  try {
-    fs.mkdirSync(TEMP_DIR, { recursive: true });
-    console.log(`Created upload directory: ${TEMP_DIR}`);
-  } catch (dirError) {
-    console.error(`Failed to create upload directory ${TEMP_DIR}:`, dirError);
-  }
-}
 
 export async function POST(request: NextRequest) {
   try {
@@ -139,142 +117,81 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Create a directory for this upload if it doesn't exist
-    let uploadDir = path.join(TEMP_DIR, uploadId);
-    
-    try {
-      // Try to create the upload directory if it doesn't exist
-      if (!fs.existsSync(uploadDir)) {
-        console.log(`Creating upload directory: ${uploadDir}`);
-        fs.mkdirSync(uploadDir, { recursive: true });
-      }
-      
-      // Test write permissions on the directory
-      const testFile = path.join(uploadDir, '.write-test');
-      try {
-        fs.writeFileSync(testFile, 'test');
-        fs.unlinkSync(testFile);
-        console.log(`Verified write permissions in ${uploadDir}`);
-      } catch (writeError) {
-        console.error(`No write permission in ${uploadDir}:`, writeError);
-        
-        // Try alternative directory
-        const altUploadDir = path.join(process.cwd(), 'tmp', 'uploads', uploadId);
-        console.log(`Trying alternative directory: ${altUploadDir}`);
-        
-        try {
-          fs.mkdirSync(altUploadDir, { recursive: true });
-          const altTestFile = path.join(altUploadDir, '.write-test');
-          
-          fs.writeFileSync(altTestFile, 'test');
-          fs.unlinkSync(altTestFile);
-          console.log(`Using alternative directory with confirmed write permissions: ${altUploadDir}`);
-          // Use the alternative directory instead
-          uploadDir = altUploadDir;
-        } catch (altWriteError) {
-          console.error(`No write permission in alternative directory:`, altWriteError);
-          return NextResponse.json(
-            { success: false, error: "Server has no write permissions for uploads" },
-            { status: 500 }
-          );
-        }
-      }
-    } catch (dirError: any) {
-      console.error(`Error accessing upload directory:`, dirError);
-      return NextResponse.json(
-        { success: false, error: `Failed to access upload directory: ${dirError.message}` },
-        { status: 500 }
-      );
-    }
-
-    // Write the chunk to disk
-    const chunkPath = path.join(uploadDir, `chunk-${chunkIndex}`);
+    // Create storage path for chunks
+    const chunkStoragePath = `chunks/${uploadId}/chunk-${chunkIndex}`;
     
     try {
       // Convert the file to buffer
       const buffer = Buffer.from(await file.arrayBuffer());
       
-      // Write the chunk synchronously
-      fs.writeFileSync(chunkPath, buffer, { mode: 0o666 }); // Set permissive file permissions
+      // Upload the chunk directly to Supabase Storage
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('transcriptions')
+        .upload(chunkStoragePath, buffer, {
+          contentType: 'application/octet-stream',
+          upsert: true,
+        });
       
-      // Verify the chunk was written successfully
-      if (!fs.existsSync(chunkPath)) {
-        console.error(`Failed to write chunk ${chunkIndex} to ${chunkPath} (file doesn't exist after write)`);
+      if (uploadError) {
+        console.error(`Error uploading chunk ${chunkIndex} to Supabase Storage:`, uploadError);
         return NextResponse.json(
-          { success: false, error: `Failed to save chunk ${chunkIndex}` },
+          { success: false, error: `Failed to upload chunk to storage: ${uploadError.message}` },
           { status: 500 }
         );
       }
       
-      const stats = fs.statSync(chunkPath);
-      if (stats.size === 0) {
-        console.error(`Chunk ${chunkIndex} was written but is empty (0 bytes)`);
-        return NextResponse.json(
-          { success: false, error: `Chunk ${chunkIndex} is empty` },
-          { status: 500 }
-        );
+      console.log(`Successfully uploaded chunk ${chunkIndex} to ${chunkStoragePath}`);
+      
+      // Create metadata for the first chunk
+      if (chunkIndex === 0) {
+        try {
+          const metadata = {
+            fileName,
+            fileType,
+            totalChunks,
+            uploadId,
+            fileSize,
+            transcriptionId: transcriptionId || null,
+            userId,
+            createdAt: new Date().toISOString(),
+          };
+          
+          // Store metadata in Supabase Storage
+          const { data: metaData, error: metaError } = await supabase.storage
+            .from('transcriptions')
+            .upload(`chunks/${uploadId}/metadata.json`, JSON.stringify(metadata, null, 2), {
+              contentType: 'application/json',
+              upsert: true,
+            });
+          
+          if (metaError) {
+            console.error('Error storing metadata:', metaError);
+            // Non-fatal, continue even if metadata upload fails
+          } else {
+            console.log(`Created metadata at chunks/${uploadId}/metadata.json`);
+          }
+        } catch (metaError: any) {
+          console.error(`Error creating metadata:`, metaError);
+          // Continue even if metadata creation fails
+        }
       }
       
-      console.log(`Successfully wrote chunk ${chunkIndex} (${stats.size} bytes) to ${chunkPath}`);
-      
-      // Write a duplicate copy of the chunk to the /uploads directory directly
-      // This is a backup approach in case the nested directory has permission issues
-      try {
-        const directChunkPath = path.join(TEMP_DIR, `${uploadId}-chunk-${chunkIndex}`);
-        fs.writeFileSync(directChunkPath, buffer, { mode: 0o666 });
-        console.log(`Wrote backup chunk to ${directChunkPath}`);
-      } catch (backupError) {
-        console.error('Failed to write backup chunk:', backupError);
-        // Non-fatal, continue even if backup fails
-      }
-    } catch (writeError: any) {
-      console.error(`Error writing chunk ${chunkIndex} to disk:`, writeError);
+      // Return success response
+      return NextResponse.json({
+        success: true,
+        message: `Chunk ${chunkIndex + 1}/${totalChunks} uploaded successfully`,
+        chunkIndex,
+        totalChunks,
+        uploadId,
+        chunkPath: chunkStoragePath,
+      });
+    } catch (error: any) {
+      console.error(`Error processing chunk ${chunkIndex}:`, error);
       return NextResponse.json(
-        { success: false, error: `Failed to save chunk: ${writeError.message}` },
+        { success: false, error: `Failed to process chunk: ${error.message}` },
         { status: 500 }
       );
     }
-
-    // Create a metadata file if this is the first chunk
-    if (chunkIndex === 0) {
-      try {
-        const metadataPath = path.join(uploadDir, 'metadata.json');
-        const metadata = {
-          fileName,
-          fileType,
-          totalChunks,
-          uploadId,
-          fileSize,
-          transcriptionId: transcriptionId || null,
-          createdAt: new Date().toISOString(),
-        };
-        fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
-        console.log(`Created metadata file at ${metadataPath}`);
-      } catch (metaError: any) {
-        console.error(`Error writing metadata:`, metaError);
-        // Continue even if metadata write fails
-      }
-    }
-
-    // List contents of the upload directory to verify
-    try {
-      const dirContents = fs.readdirSync(uploadDir);
-      console.log(`Contents of ${uploadDir} after chunk ${chunkIndex} upload:`, dirContents);
-    } catch (readError) {
-      console.error(`Error reading upload directory:`, readError);
-    }
-
-    // Return success
-    return NextResponse.json({
-      success: true,
-      message: `Chunk ${chunkIndex + 1}/${totalChunks} uploaded successfully`,
-      chunkIndex,
-      totalChunks,
-      uploadId,
-      chunkPath: chunkPath.replace(/\\/g, '/'), // For debugging
-      uploadDir: uploadDir.replace(/\\/g, '/'), // For debugging
-      pathMatches: uploadDir === path.join(TEMP_DIR, uploadId) // For debugging
-    });
   } catch (error: any) {
     console.error('Error uploading chunk:', error);
     return NextResponse.json(
