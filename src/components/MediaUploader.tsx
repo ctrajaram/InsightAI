@@ -734,29 +734,21 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
         if (analysisResponse.success && analysisResponse.analysis) {
           console.log('Updating transcription record with analysis data:', analysisResponse.analysis);
           
-          // Fetch the latest record from the database to ensure we have the most up-to-date data
-          const { data: updatedRecord } = await supabase
-            .from('transcriptions')
-            .select('*')
-            .eq('id', transcriptionId)
-            .single();
-            
-          if (updatedRecord) {
-            // Update the local state with the analysis data
-            setTranscriptionRecord(prev => {
-              if (!prev) return prev;
-              return {
-                ...prev,
-                analysisStatus: 'completed',
-                analysisData: analysisResponse.analysis
-              };
-            });
-            
-            console.log('Transcription record updated with analysis data');
-          }
+          // Update the local state with the analysis data immediately
+          setTranscriptionRecord(prev => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              analysisStatus: 'completed' as const,
+              analysisData: analysisResponse.analysis
+            };
+          });
+          
+          // No need to fetch from database again since we're updating the state directly
+          setIsAnalyzing(false);
+          console.log('Transcription record updated with analysis data');
         }
         
-        setIsAnalyzing(false);
         return analysisResponse;
       }, 2, 2000, 'Analysis request');
     } catch (error: any) {
@@ -858,11 +850,11 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
               </TabsTrigger>
               <TabsTrigger 
                 value="analysis" 
-                disabled={!transcriptionRecord?.analysisData}
+                disabled={!transcriptionRecord?.analysisData && transcriptionRecord?.analysisStatus !== 'processing'}
                 className="data-[state=active]:bg-white data-[state=active]:shadow-sm"
               >
                 <BarChart className="h-4 w-4 mr-2" />
-                Analysis
+                {transcriptionRecord?.analysisStatus === 'processing' ? 'Analyzing...' : 'Analysis'}
               </TabsTrigger>
             </TabsList>
 
@@ -1076,6 +1068,19 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
         if (transcriptionRecord.analysisStatus !== 'completed' && 
             transcriptionRecord.analysisStatus !== 'processing') {
           try {
+            console.log('Auto-triggering analysis for transcription:', transcriptionRecord.id);
+            setAnalysisStatus('processing');
+            
+            // Update local state to show analysis is in progress
+            setTranscriptionRecord(prev => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                analysisStatus: 'processing' as const
+              };
+            });
+            
+            setIsAnalyzing(true);
             await requestAnalysis(transcriptionRecord.id);
           } catch (error) {
             console.error('Auto-sentiment analysis failed:', error);
