@@ -70,7 +70,7 @@ export async function POST(request: NextRequest) {
     // For operations that need to bypass RLS, try to use service role if available
     // But fall back to the regular client if not available
     let supabaseAdmin = supabase;
-    const serviceKey = process.env.SUPABASE_SERVICE_KEY;
+    const serviceKey = process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
     if (serviceKey) {
       supabaseAdmin = createClient(supabaseUrl, serviceKey, {
         auth: {
@@ -78,6 +78,16 @@ export async function POST(request: NextRequest) {
           persistSession: false
         }
       });
+      
+      // Set auth context to the user to help with RLS policies
+      const { error: authError } = await supabaseAdmin.auth.setSession({
+        access_token: token,
+        refresh_token: ''
+      });
+      
+      if (authError) {
+        console.warn('Failed to set auth context:', authError.message);
+      }
     } else {
       console.warn('SUPABASE_SERVICE_KEY not found, using regular client which may have RLS restrictions');
     }
