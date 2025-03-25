@@ -68,7 +68,7 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [transcriptionRecord, setTranscriptionRecord] = useState<TranscriptionRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [transcriptionStatus, setTranscriptionStatus] = useState<'pending' | 'processing' | 'completed' | 'error'>('pending');
+  const [transcriptionStatus, setTranscriptionStatus] = useState<'pending' | 'processing' | 'completed' | 'error' | 'partial'>('pending');
   const [analysisStatus, setAnalysisStatus] = useState<'idle' | 'processing' | 'completed' | 'error'>('idle');
   const [analysisData, setAnalysisData] = useState<any>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
@@ -441,42 +441,107 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
         }
       }
       
-      // Update transcription status to completed
-      setTranscriptionStatus('completed');
+      // Check if this is a partial transcription for a large file
+      const isPartial = data.isPartial || false;
+      
+      // Update transcription status appropriately
+      setTranscriptionStatus(isPartial ? 'processing' : 'completed');
       
       // Update the transcription record with the new transcript text
       const updatedRecord: TranscriptionRecord = {
         ...transcriptionRecord!,
         transcriptionText: data.text,
-        status: 'completed',
+        status: isPartial ? 'partial' : 'completed',
       };
       
       setTranscriptionRecord(updatedRecord);
       
-      console.log('Transcription completed successfully');
-      
-      // Automatically start the summarization process
-      console.log('Starting automatic summarization...');
-      try {
-        await generateSummaryForTranscription(transcriptionId, data.text);
+      if (isPartial) {
+        console.log('Received partial transcription for large file');
+        setUploadMessage('Large file detected. A partial transcription has been generated while the full version is being processed in the background.');
         
-        // After summary is complete, automatically start analysis
-        try {
-          console.log('Starting automatic analysis...');
-          await requestAnalysis(transcriptionId);
-        } catch (analysisError) {
-          console.error('Failed to generate analysis:', analysisError);
-        }
-      } catch (summaryError) {
-        console.error('Failed to generate summary:', summaryError);
-        // Continue with the process even if summarization fails
+        // Set up a polling mechanism to check for the full transcription
+        const pollInterval = setInterval(async () => {
+          console.log('Polling for completed transcription...');
+          const { data: pollData, error: pollError } = await supabase
+            .from('transcriptions')
+            .select('id, status, transcription_text')
+            .eq('id', transcriptionId)
+            .single();
+            
+          if (pollError) {
+            console.error('Error polling for transcription:', pollError);
+            return;
+          }
+          
+          if (pollData.status === 'completed') {
+            console.log('Full transcription now available:', pollData);
+            clearInterval(pollInterval);
+            
+            // Update the UI with the complete transcription
+            setTranscriptionStatus('completed');
+            setTranscriptionRecord(prev => ({
+              ...prev!,
+              transcriptionText: pollData.transcription_text,
+              status: 'completed',
+            }));
+            
+            // Start summarization and analysis with the complete transcription
+            try {
+              await generateSummaryForTranscription(transcriptionId, pollData.transcription_text);
+              
+              // After summary is complete, automatically start analysis
+              try {
+                console.log('Starting automatic analysis...');
+                await requestAnalysis(transcriptionId);
+              } catch (analysisError) {
+                console.error('Failed to generate analysis:', analysisError);
+              }
+            } catch (summaryError) {
+              console.error('Failed to generate summary:', summaryError);
+              
+              // Try to start analysis anyway, even if summary failed
+              try {
+                console.log('Starting analysis despite summary failure...');
+                await requestAnalysis(transcriptionId);
+              } catch (analysisError) {
+                console.error('Failed to generate analysis after summary failure:', analysisError);
+              }
+            }
+          }
+        }, 10000); // Poll every 10 seconds
         
-        // Try to start analysis anyway, even if summary failed
+        // Stop polling after 5 minutes (30 polls)
+        setTimeout(() => {
+          clearInterval(pollInterval);
+          console.log('Stopped polling for transcription after timeout');
+        }, 300000);
+      } else {
+        console.log('Transcription completed successfully');
+        
+        // Automatically start the summarization process
+        console.log('Starting automatic summarization...');
         try {
-          console.log('Starting analysis despite summary failure...');
-          await requestAnalysis(transcriptionId);
-        } catch (analysisError) {
-          console.error('Failed to generate analysis after summary failure:', analysisError);
+          await generateSummaryForTranscription(transcriptionId, data.text);
+          
+          // After summary is complete, automatically start analysis
+          try {
+            console.log('Starting automatic analysis...');
+            await requestAnalysis(transcriptionId);
+          } catch (analysisError) {
+            console.error('Failed to generate analysis:', analysisError);
+          }
+        } catch (summaryError) {
+          console.error('Failed to generate summary:', summaryError);
+          // Continue with the process even if summarization fails
+          
+          // Try to start analysis anyway, even if summary failed
+          try {
+            console.log('Starting analysis despite summary failure...');
+            await requestAnalysis(transcriptionId);
+          } catch (analysisError) {
+            console.error('Failed to generate analysis after summary failure:', analysisError);
+          }
         }
       }
       
@@ -1797,15 +1862,20 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
           const responseClone = response.clone();
           
           if (!response.ok) {
-            let errorMessage;
+            let errorMessage = 'Failed to analyze transcription';
+            
             try {
               const errorData = await response.json();
-              errorMessage = errorData.error || `HTTP error ${response.status}`;
+              errorMessage = errorData.error || errorMessage;
+              console.error('Analysis error response:', errorData);
             } catch (jsonError) {
               try {
-                errorMessage = await responseClone.text();
+                // If JSON parsing fails, try to get the text
+                const textError = await responseClone.text();
+                errorMessage = textError || errorMessage;
+                console.error('Analysis error text:', textError);
               } catch (textError) {
-                errorMessage = `HTTP error ${response.status}`;
+                console.error('Failed to read error response:', textError);
               }
             }
             

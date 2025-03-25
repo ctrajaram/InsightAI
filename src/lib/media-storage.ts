@@ -53,7 +53,7 @@ export interface TranscriptionRecord {
   fileName: string;
   fileSize: number;
   duration?: number;
-  status: 'processing' | 'completed' | 'error';
+  status: 'processing' | 'completed' | 'error' | 'partial';
   error?: string;
 }
 

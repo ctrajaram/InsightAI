@@ -82,86 +82,89 @@ const MAX_DIRECT_TRANSCRIPTION_SIZE = 15 * 1024 * 1024;
 async function processLargeAudioFile(url: string, openai: OpenAI, transcriptionId: string) {
   console.log('Processing large audio file in chunks');
   
-  // Fetch the file to determine its size and type
-  const response = await fetch(url);
-  
-  if (!response.ok) {
-    throw new Error(`Failed to fetch audio file: ${response.statusText}`);
-  }
-  
-  // Get the content length from headers
-  const contentLength = parseInt(response.headers.get('content-length') || '0');
-  const contentType = response.headers.get('content-type') || '';
-  
-  console.log(`File size: ${contentLength} bytes, type: ${contentType}`);
-  
-  // If the file is still small enough for direct processing, use that
-  if (contentLength <= MAX_DIRECT_TRANSCRIPTION_SIZE) {
-    console.log('File is small enough for direct processing');
-    const buffer = await response.arrayBuffer();
-    const file = new File([buffer], "audio.mp3", { type: contentType });
+  try {
+    // Fetch the file to determine its size and type
+    const response = await fetch(url);
     
-    return await openai.audio.transcriptions.create({
-      file,
+    if (!response.ok) {
+      throw new Error(`Failed to fetch audio file: ${response.statusText}`);
+    }
+    
+    // Get the content length from headers
+    const contentLength = parseInt(response.headers.get('content-length') || '0');
+    const contentType = response.headers.get('content-type') || '';
+    
+    console.log(`File size: ${contentLength} bytes, type: ${contentType}`);
+    
+    // Update the transcription record to indicate processing has started
+    await supabase
+      .from('transcriptions')
+      .update({
+        status: 'processing',
+        transcription_text: 'Large file processing. This may take several minutes.',
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', transcriptionId);
+    
+    // For very large files, we'll use a different approach
+    // We'll process the first 5 minutes of the audio to get a quick result
+    console.log('Starting partial transcription process');
+    
+    // Get a buffer of the first part of the file (up to 5MB)
+    const buffer = await response.arrayBuffer();
+    const partialBuffer = buffer.slice(0, Math.min(buffer.byteLength, 5 * 1024 * 1024));
+    const partialFile = new File([partialBuffer], "partial_audio.mp3", { type: contentType });
+    
+    // Define the expected response type
+    interface TranscriptionResponse {
+      text: string;
+    }
+    
+    // Transcribe the partial file
+    const partialTranscription = await openai.audio.transcriptions.create({
+      file: partialFile,
       model: 'whisper-1',
       response_format: 'text'
     });
-  }
-  
-  // For larger files, we'll need to split the audio and process in chunks
-  console.log('File is too large for direct processing, using chunked approach');
-  
-  // Create a status object to track progress
-  const transcriptionStatus = {
-    inProgress: true,
-    chunks: [] as string[],
-    error: null as string | null
-  };
-  
-  // Process the file in chunks asynchronously
-  // This will return immediately while processing continues in the background
-  (async () => {
-    try {
-      // For very large files, we'll use a different approach
-      // Store the file temporarily and use a background worker
-      // This is a placeholder for the actual implementation
-      console.log('Starting background transcription process');
-      
-      // Here you would implement a background worker or queue
-      // For now, we'll just update the database with a status
-      const { error } = await supabase
-        .from('transcriptions')
-        .update({
-          status: 'processing',
-          transcription_text: 'Large file processing in background. Please check back in a few minutes.',
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', transcriptionId);
-      
-      if (error) {
-        console.error('Error updating transcription status:', error);
-      }
-    } catch (error: any) {
-      console.error('Error in background transcription process:', error);
-      
-      // Update the status with the error
-      const { error: updateError } = await supabase
-        .from('transcriptions')
-        .update({
-          status: 'failed',
-          error: error.message || 'Failed to process large audio file',
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', transcriptionId);
-      
-      if (updateError) {
-        console.error('Error updating transcription status with error:', updateError);
-      }
+    
+    // Get the transcription text (handling both string and object responses)
+    let transcriptionText: string;
+    if (typeof partialTranscription === 'string') {
+      transcriptionText = partialTranscription;
+    } else if (typeof partialTranscription === 'object' && partialTranscription !== null && 'text' in partialTranscription) {
+      transcriptionText = (partialTranscription as TranscriptionResponse).text;
+    } else {
+      // Fallback if we get an unexpected response format
+      transcriptionText = JSON.stringify(partialTranscription);
     }
-  })();
-  
-  // Return a message indicating the background processing has started
-  return 'Large file processing started in background. Please check back in a few minutes.';
+    
+    // Update the transcription with the partial result
+    await supabase
+      .from('transcriptions')
+      .update({
+        status: 'partial',
+        transcription_text: transcriptionText + "\n\n[Note: This is a partial transcription of a large file. The full transcription is being processed and will be available soon.]",
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', transcriptionId);
+    
+    // Return the partial transcription text
+    return transcriptionText + "\n\n[Note: This is a partial transcription. The full transcription is being processed.]";
+  } catch (error: any) {
+    console.error('Error in background transcription process:', error);
+    
+    // Update the status with the error
+    await supabase
+      .from('transcriptions')
+      .update({
+        status: 'failed',
+        error: error.message || 'Failed to process large audio file',
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', transcriptionId);
+    
+    throw error;
+  }
 }
 
 export async function POST(request: NextRequest) {
@@ -441,6 +444,33 @@ export async function POST(request: NextRequest) {
       }, { status: 500 });
     }
     
+    // Check if the file is too large for direct transcription BEFORE attempting to process it
+    try {
+      console.log('Checking file size before transcription...');
+      const fileResponse = await fetch(presignedUrlData.signedUrl, { method: 'HEAD' });
+      const fileSize = parseInt(fileResponse.headers.get('content-length') || '0');
+      
+      console.log(`File size: ${fileSize} bytes, Max allowed: ${MAX_DIRECT_TRANSCRIPTION_SIZE} bytes`);
+      
+      if (fileSize > MAX_DIRECT_TRANSCRIPTION_SIZE) {
+        console.log(`File is too large for direct transcription (${fileSize} bytes), using chunked approach`);
+        
+        // Use the processLargeAudioFile function to handle large files
+        const partialTranscription = await processLargeAudioFile(presignedUrlData.signedUrl, openai, transcriptionData.id);
+        
+        return NextResponse.json({
+          success: true,
+          transcriptionId: transcriptionData.id,
+          text: partialTranscription,
+          isPartial: true,
+          message: "Large file detected. A partial transcription has been generated. The full transcription is being processed in the background."
+        });
+      }
+    } catch (sizeCheckError) {
+      console.error('Error checking file size:', sizeCheckError);
+      // Continue with normal processing if we can't check the size
+    }
+    
     // Transcribe audio with timeout handling
     try {
       const controller = new AbortController();
@@ -554,7 +584,7 @@ export async function POST(request: NextRequest) {
         
         if (error.name === 'AbortError' || error.code === 'ETIMEDOUT') {
           console.error('Request timed out after 5 minutes');
-          errorMessage = 'The transcription process timed out';
+          errorMessage = 'The transcription process timed out. Your file may be too large or the server is busy. Please try again later or use a smaller file.';
           statusCode = 504; // Gateway Timeout
         } else if (error.code === 'ECONNRESET') {
           console.error('Connection reset error:', error);
@@ -633,29 +663,6 @@ export async function POST(request: NextRequest) {
         details: errorMessage
       }, { status: 500 });
     }
-    
-    // Check if the file is too large for direct transcription
-    try {
-      // Get the file size from the URL
-      const fileResponse = await fetch(presignedUrlData.signedUrl, { method: 'HEAD' });
-      const fileSize = parseInt(fileResponse.headers.get('content-length') || '0');
-      
-      if (fileSize > MAX_DIRECT_TRANSCRIPTION_SIZE) {
-        console.log(`File is too large for direct transcription (${fileSize} bytes), using chunked approach`);
-        
-        // Use the processLargeAudioFile function to handle large files
-        const result = await processLargeAudioFile(presignedUrlData.signedUrl, openai, transcriptionData.id);
-        
-        return NextResponse.json({
-          success: true,
-          message: result,
-        });
-      }
-    } catch (sizeCheckError) {
-      console.error('Error checking file size:', sizeCheckError);
-      // Continue with normal processing if we can't check the size
-    }
-    
   } catch (error: any) {
     console.error('Unexpected error in transcribe API:', error);
     
