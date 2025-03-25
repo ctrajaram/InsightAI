@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
+import { createClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
 import fs from 'fs';
 import path from 'path';
@@ -24,17 +24,42 @@ const TEMP_DIR = path.join(os.tmpdir(), 'insight-ai-uploads');
 
 export async function POST(request: NextRequest) {
   try {
-    // Authenticate the user
-    const supabase = createRouteHandlerClient({ cookies });
-    const { data: { session } } = await supabase.auth.getSession();
-
-    if (!session) {
+    // Get the authorization header
+    const authHeader = request.headers.get('Authorization');
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return NextResponse.json(
         { success: false, error: 'Authentication required' },
         { status: 401 }
       );
     }
-
+    
+    // Extract the token
+    const token = authHeader.split(' ')[1];
+    
+    // Verify the token with Supabase
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    
+    if (!supabaseUrl || !supabaseKey) {
+      console.error('Missing Supabase configuration');
+      return NextResponse.json(
+        { success: false, error: 'Server configuration error' },
+        { status: 500 }
+      );
+    }
+    
+    const supabase = createClient(supabaseUrl, supabaseKey);
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    
+    if (authError || !user) {
+      console.error('Authentication error:', authError?.message || 'No user found');
+      return NextResponse.json(
+        { success: false, error: 'Authentication failed. Please sign in again.' },
+        { status: 401 }
+      );
+    }
+    
     // Parse the request body
     const body = await request.json();
     const { uploadId, transcriptionId, fileName, fileType, totalChunks } = body;
@@ -88,8 +113,11 @@ export async function POST(request: NextRequest) {
     // Read the reassembled file
     const fileBuffer = fs.readFileSync(tempFilePath);
 
+    // Use the authenticated user's ID
+    const userId = user.id;
+
     // Upload the reassembled file to Supabase Storage
-    const filePath = `${session.user.id}/${Date.now()}_${fileName}`;
+    const filePath = `${userId}/${Date.now()}_${fileName}`;
     const { data: uploadData, error: uploadError } = await supabase.storage
       .from('media')
       .upload(filePath, fileBuffer, {

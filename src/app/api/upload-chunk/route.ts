@@ -30,17 +30,42 @@ if (!fs.existsSync(TEMP_DIR)) {
 
 export async function POST(request: NextRequest) {
   try {
-    // Authenticate the user
-    const supabase = createRouteHandlerClient({ cookies });
-    const { data: { session } } = await supabase.auth.getSession();
-
-    if (!session) {
+    // Get the authorization header
+    const authHeader = request.headers.get('Authorization');
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return NextResponse.json(
         { success: false, error: 'Authentication required' },
         { status: 401 }
       );
     }
-
+    
+    // Extract the token
+    const token = authHeader.split(' ')[1];
+    
+    // Verify the token with Supabase
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    
+    if (!supabaseUrl || !supabaseKey) {
+      console.error('Missing Supabase configuration');
+      return NextResponse.json(
+        { success: false, error: 'Server configuration error' },
+        { status: 500 }
+      );
+    }
+    
+    const supabase = createClient(supabaseUrl, supabaseKey);
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    
+    if (authError || !user) {
+      console.error('Authentication error:', authError?.message || 'No user found');
+      return NextResponse.json(
+        { success: false, error: 'Authentication failed. Please sign in again.' },
+        { status: 401 }
+      );
+    }
+    
     // Parse the multipart form data
     const formData = await request.formData();
     const file = formData.get('file') as File;
@@ -59,6 +84,9 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
+    
+    // Use the authenticated user's ID instead of relying on the form data
+    const userId = user.id;
 
     // Create a directory for this upload if it doesn't exist
     const uploadDir = path.join(TEMP_DIR, uploadId);
@@ -79,7 +107,7 @@ export async function POST(request: NextRequest) {
         fileSize,
         totalChunks,
         transcriptionId,
-        userId: session.user.id,
+        userId,
         uploadTime: new Date().toISOString(),
       };
       fs.writeFileSync(

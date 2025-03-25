@@ -94,6 +94,13 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
     const totalChunks = Math.ceil(fileSize / chunkSize);
     
     try {
+      // Get the current session to retrieve the access token
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (!session || !session.access_token) {
+        throw new Error('Authentication required for file upload');
+      }
+      
       // Upload each chunk
       for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
         const start = chunkIndex * chunkSize;
@@ -118,6 +125,9 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
         // Upload the chunk
         const response = await fetch('/api/upload-chunk', {
           method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${session.access_token}`
+          },
           body: formData,
         });
         
@@ -158,6 +168,7 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`
         },
         body: JSON.stringify({
           fileId,
