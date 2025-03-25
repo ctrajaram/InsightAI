@@ -162,33 +162,34 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       console.log('Starting file upload to Supabase...');
       let fileInfo;
       
-      // Use server-side upload API for all files
-      const formData = new FormData();
-      formData.append('file', selectedFile);
-      
       // Get the session for authentication
       const session = await supabase.auth.getSession();
       if (!session.data?.session) {
         throw new Error('Authentication required');
       }
       
-      // Send the file to our server-side API
-      const response = await fetch('/api/upload-file', {
+      // Step 1: Get a signed URL from our server
+      const getSignedUrlResponse = await fetch('/api/upload-file', {
         method: 'POST',
         headers: {
+          'Content-Type': 'application/json',
           'Authorization': `Bearer ${session.data.session.access_token}`
         },
-        body: formData
+        body: JSON.stringify({
+          filename: selectedFile.name,
+          contentType: selectedFile.type,
+          size: selectedFile.size
+        })
       });
       
       // Clone the response for potential error handling
-      const responseClone = response.clone();
+      const signedUrlResponseClone = getSignedUrlResponse.clone();
       
-      if (!response.ok) {
+      if (!getSignedUrlResponse.ok) {
         let errorMessage;
         try {
-          const errorData = await response.json();
-          errorMessage = errorData.error || `HTTP error ${response.status}`;
+          const errorData = await getSignedUrlResponse.json();
+          errorMessage = errorData.error || `HTTP error ${getSignedUrlResponse.status}`;
           
           // Handle specific errors
           if (errorData.rlsError) {
@@ -202,16 +203,43 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
           }
         } catch (jsonError) {
           try {
-            errorMessage = await responseClone.text();
+            errorMessage = await signedUrlResponseClone.text();
           } catch (textError) {
-            errorMessage = `HTTP error ${response.status}`;
+            errorMessage = `HTTP error ${getSignedUrlResponse.status}`;
           }
         }
         
         throw new Error(errorMessage);
       }
       
-      fileInfo = await response.json();
+      // Get the signed URL and file info
+      const signedUrlData = await getSignedUrlResponse.json();
+      console.log('Received signed URL for direct upload');
+      
+      // Step 2: Upload directly to Supabase Storage using the signed URL
+      const uploadResponse = await fetch(signedUrlData.signedUrl, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': selectedFile.type
+        },
+        body: selectedFile
+      });
+      
+      if (!uploadResponse.ok) {
+        throw new Error(`Direct upload failed with status: ${uploadResponse.status}`);
+      }
+      
+      console.log('File uploaded successfully via signed URL');
+      
+      // Use the file info returned from the signed URL request
+      fileInfo = {
+        path: signedUrlData.path,
+        url: signedUrlData.url,
+        filename: signedUrlData.filename,
+        contentType: signedUrlData.contentType,
+        size: signedUrlData.size
+      };
+      
       console.log('File uploaded successfully, creating record...');
       
       // Create transcription record in database
