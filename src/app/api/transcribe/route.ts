@@ -49,19 +49,20 @@ async function retryWithExponentialBackoff<T>(
   while (true) {
     try {
       return await operation();
-    } catch (error: any) {
+    } catch (error: unknown) {
       retries++;
       
       // If we've reached max retries or it's not a network error, throw
       if (retries >= maxRetries || 
-          !(error.code === 'ECONNRESET' || 
-            error.code === 'ETIMEDOUT' || 
-            error.message?.includes('network') || 
-            error.message?.includes('connection'))) {
+          !(error instanceof Error && 
+            ((error as any).code === 'ECONNRESET' || 
+             (error as any).code === 'ETIMEDOUT' || 
+             error.message?.includes('network') || 
+             error.message?.includes('connection')))) {
         throw error;
       }
       
-      console.log(`Retry ${retries}/${maxRetries} after ${delay}ms due to: ${error.message || error.code || 'Unknown error'}`);
+      console.log(`Retry ${retries}/${maxRetries} after ${delay}ms due to: ${error instanceof Error ? error.message : String(error)}`);
       
       // Wait for the delay period
       await new Promise(resolve => setTimeout(resolve, delay));
@@ -72,11 +73,11 @@ async function retryWithExponentialBackoff<T>(
   }
 }
 
-// Increase timeout for transcription to 5 minutes (300000 ms) instead of 3 minutes
-const TRANSCRIPTION_TIMEOUT = 300000; // 5 minutes
+// Increase timeout for transcription to 8 minutes (480000 ms) instead of 5 minutes
+const TRANSCRIPTION_TIMEOUT = 480000; // 8 minutes
 
-// Maximum size for direct transcription (15MB)
-const MAX_DIRECT_TRANSCRIPTION_SIZE = 15 * 1024 * 1024;
+// Maximum size for direct transcription (10MB instead of 15MB to be safer)
+const MAX_DIRECT_TRANSCRIPTION_SIZE = 10 * 1024 * 1024;
 
 // Function to process large files in chunks
 async function processLargeAudioFile(url: string, openai: OpenAI, transcriptionId: string) {
@@ -120,12 +121,25 @@ async function processLargeAudioFile(url: string, openai: OpenAI, transcriptionI
       text: string;
     }
     
-    // Transcribe the partial file
-    const partialTranscription = await openai.audio.transcriptions.create({
-      file: partialFile,
-      model: 'whisper-1',
-      response_format: 'text'
-    });
+    // Transcribe the partial file with retries
+    let partialTranscription;
+    try {
+      partialTranscription = await retryWithExponentialBackoff(
+        async () => {
+          return await openai.audio.transcriptions.create({
+            file: partialFile,
+            model: 'whisper-1',
+            response_format: 'text'
+          });
+        },
+        3,  // 3 retries
+        2000, // Start with 2 second delay
+        2  // Double the delay each time
+      );
+    } catch (transcriptionError: unknown) {
+      console.error('Error transcribing partial file:', transcriptionError);
+      throw new Error(`Failed to transcribe partial file: ${transcriptionError instanceof Error ? transcriptionError.message : String(transcriptionError)}`);
+    }
     
     // Get the transcription text (handling both string and object responses)
     let transcriptionText: string;
@@ -148,17 +162,173 @@ async function processLargeAudioFile(url: string, openai: OpenAI, transcriptionI
       })
       .eq('id', transcriptionId);
     
+    // Start a background process to handle the full transcription
+    // This won't block the API response
+    (async () => {
+      try {
+        console.log('Starting background processing for full transcription');
+        
+        // Process the file in chunks if it's very large
+        if (contentLength > 20 * 1024 * 1024) { // If larger than 20MB
+          console.log('File is very large, processing in multiple chunks');
+          
+          // Create chunks of approximately 5MB each
+          const chunkSize = 5 * 1024 * 1024;
+          const numChunks = Math.ceil(contentLength / chunkSize);
+          const chunks: string[] = [];
+          
+          // Process each chunk with retries
+          for (let i = 0; i < numChunks; i++) {
+            console.log(`Processing chunk ${i+1} of ${numChunks}`);
+            
+            try {
+              // Fetch just this chunk of the file
+              const chunkStart = i * chunkSize;
+              const chunkEnd = Math.min((i + 1) * chunkSize - 1, contentLength - 1);
+              
+              const chunkResponse = await fetch(url, {
+                headers: {
+                  Range: `bytes=${chunkStart}-${chunkEnd}`
+                }
+              });
+              
+              if (!chunkResponse.ok) {
+                console.error(`Failed to fetch chunk ${i+1}: ${chunkResponse.statusText}`);
+                continue;
+              }
+              
+              const chunkBuffer = await chunkResponse.arrayBuffer();
+              const chunkFile = new File([chunkBuffer], `chunk_${i+1}.mp3`, { type: contentType });
+              
+              // Transcribe this chunk
+              const chunkTranscription = await retryWithExponentialBackoff(
+                async () => {
+                  return await openai.audio.transcriptions.create({
+                    file: chunkFile,
+                    model: 'whisper-1',
+                    response_format: 'text'
+                  });
+                },
+                3,  // 3 retries
+                2000, // Start with 2 second delay
+                2  // Double the delay each time
+              );
+              
+              // Extract the text
+              let chunkText: string;
+              if (typeof chunkTranscription === 'string') {
+                chunkText = chunkTranscription;
+              } else if (typeof chunkTranscription === 'object' && chunkTranscription !== null && 'text' in chunkTranscription) {
+                chunkText = (chunkTranscription as TranscriptionResponse).text;
+              } else {
+                chunkText = JSON.stringify(chunkTranscription);
+              }
+              
+              chunks.push(chunkText);
+              
+              // Update the database with progress
+              await supabase
+                .from('transcriptions')
+                .update({
+                  status: 'processing',
+                  transcription_text: transcriptionText + `\n\n[Processing: ${i+1}/${numChunks} chunks complete]`,
+                  updated_at: new Date().toISOString()
+                })
+                .eq('id', transcriptionId);
+                
+            } catch (chunkError: unknown) {
+              console.error(`Error processing chunk ${i+1}:`, chunkError);
+              // Continue with other chunks even if one fails
+            }
+          }
+          
+          // Combine all chunks
+          const fullTranscription = chunks.join(' ');
+          
+          // Update the database with the complete transcription
+          await supabase
+            .from('transcriptions')
+            .update({
+              status: 'completed',
+              transcription_text: fullTranscription,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', transcriptionId);
+            
+          console.log('Full transcription completed and saved to database');
+        } else {
+          // For moderately large files, process the whole file at once
+          console.log('Processing full file in one go');
+          
+          // Fetch the full file again
+          const fullResponse = await fetch(url);
+          const fullBuffer = await fullResponse.arrayBuffer();
+          const fullFile = new File([fullBuffer], "full_audio.mp3", { type: contentType });
+          
+          // Transcribe the full file
+          const fullTranscription = await retryWithExponentialBackoff(
+            async () => {
+              return await openai.audio.transcriptions.create({
+                file: fullFile,
+                model: 'whisper-1',
+                response_format: 'text'
+              });
+            },
+            3,  // 3 retries
+            2000, // Start with 2 second delay
+            2  // Double the delay each time
+          );
+          
+          // Extract the text
+          let fullText: string;
+          if (typeof fullTranscription === 'string') {
+            fullText = fullTranscription;
+          } else if (typeof fullTranscription === 'object' && fullTranscription !== null && 'text' in fullTranscription) {
+            fullText = (fullTranscription as TranscriptionResponse).text;
+          } else {
+            fullText = JSON.stringify(fullTranscription);
+          }
+          
+          // Update the database with the complete transcription
+          await supabase
+            .from('transcriptions')
+            .update({
+              status: 'completed',
+              transcription_text: fullText,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', transcriptionId);
+            
+          console.log('Full transcription completed and saved to database');
+        }
+      } catch (backgroundError: unknown) {
+        console.error('Background transcription process failed:', backgroundError);
+        
+        // Update the database with the error
+        await supabase
+          .from('transcriptions')
+          .update({
+            status: 'error',
+            error: `Background processing failed: ${backgroundError instanceof Error ? backgroundError.message : String(backgroundError)}`,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', transcriptionId);
+      }
+    })().catch(error => {
+      console.error('Unhandled error in background process:', error);
+    });
+    
     // Return the partial transcription text
     return transcriptionText + "\n\n[Note: This is a partial transcription. The full transcription is being processed.]";
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Error in background transcription process:', error);
     
     // Update the status with the error
     await supabase
       .from('transcriptions')
       .update({
-        status: 'failed',
-        error: error.message || 'Failed to process large audio file',
+        status: 'error',
+        error: error instanceof Error ? error.message : String(error),
         updated_at: new Date().toISOString()
       })
       .eq('id', transcriptionId);
@@ -173,7 +343,7 @@ export async function POST(request: NextRequest) {
     let body;
     try {
       body = await request.json();
-    } catch (parseError) {
+    } catch (parseError: unknown) {
       console.error('Failed to parse request body as JSON:', parseError);
       return NextResponse.json({ 
         error: 'Invalid JSON in request body',
@@ -253,8 +423,8 @@ export async function POST(request: NextRequest) {
         }, 5, 1000); // 5 retries with a 1 second initial delay
         
         console.log('Successfully found transcription record after retries:', transcriptionData);
-      } catch (retryError: any) {
-        console.error('All retry attempts failed to find transcription record:', retryError.message);
+      } catch (retryError: unknown) {
+        console.error('All retry attempts failed to find transcription record:', retryError);
         
         // Last attempt to find any recent transcriptions for this user
         const { data: userTranscriptions } = await supabase
@@ -367,7 +537,7 @@ export async function POST(request: NextRequest) {
             allowedMimeTypes: ['audio/mpeg', 'audio/mp3']
           });
           console.log('Successfully created media bucket');
-        } catch (bucketError) {
+        } catch (bucketError: unknown) {
           console.error('Error creating media bucket:', bucketError);
           // Continue anyway, maybe the bucket exists but we don't have permission to list it
         }
@@ -422,7 +592,7 @@ export async function POST(request: NextRequest) {
       }, 3, 1000); // 3 retries with a 1 second initial delay
       
       console.log('Successfully generated signed URL:', presignedUrlData.signedUrl.substring(0, 100) + '...');
-    } catch (urlError) {
+    } catch (urlError: unknown) {
       console.error('Failed to generate presigned URL after retries:', urlError);
       
       // Check available buckets
@@ -466,7 +636,7 @@ export async function POST(request: NextRequest) {
           message: "Large file detected. A partial transcription has been generated. The full transcription is being processed in the background."
         });
       }
-    } catch (sizeCheckError) {
+    } catch (sizeCheckError: unknown) {
       console.error('Error checking file size:', sizeCheckError);
       // Continue with normal processing if we can't check the size
     }
@@ -558,7 +728,7 @@ export async function POST(request: NextRequest) {
           }, 3, 1000);
           
           console.log('Successfully updated transcription status to completed');
-        } catch (updateError) {
+        } catch (updateError: unknown) {
           console.error('All attempts to update transcription record failed:', updateError);
           
           // Even though we failed to update the record, we can still return the transcription text
@@ -575,22 +745,22 @@ export async function POST(request: NextRequest) {
           transcriptionId: transcriptionData.id,
           text: transcription.text,
         });
-      } catch (error: any) {
+      } catch (error: unknown) {
         clearTimeout(timeoutId); // Clear the timeout
         
         // Handle different types of errors
         let errorMessage = 'Transcription failed';
         let statusCode = 500;
         
-        if (error.name === 'AbortError' || error.code === 'ETIMEDOUT') {
+        if (error instanceof Error && (error.name === 'AbortError' || (error as any).code === 'ETIMEDOUT')) {
           console.error('Request timed out after 5 minutes');
           errorMessage = 'The transcription process timed out. Your file may be too large or the server is busy. Please try again later or use a smaller file.';
           statusCode = 504; // Gateway Timeout
-        } else if (error.code === 'ECONNRESET') {
+        } else if (error instanceof Error && (error as any).code === 'ECONNRESET') {
           console.error('Connection reset error:', error);
           errorMessage = 'Network connection error while transcribing';
           statusCode = 503; // Service Unavailable
-        } else if (error.message?.includes('network') || error.message?.includes('connection')) {
+        } else if (error instanceof Error && (error.message?.includes('network') || error.message?.includes('connection'))) {
           console.error('Network error:', error);
           errorMessage = 'Network error while transcribing';
           statusCode = 503; // Service Unavailable
@@ -608,7 +778,7 @@ export async function POST(request: NextRequest) {
               updated_at: new Date().toISOString()
             })
             .eq('id', transcriptionData.id);
-        } catch (updateError) {
+        } catch (updateError: unknown) {
           console.error('Error updating transcription status to error:', updateError);
         }
         
@@ -619,10 +789,10 @@ export async function POST(request: NextRequest) {
           details: errorMessage
         }, { status: statusCode });
       }
-    } catch (openaiError: any) {
+    } catch (openaiError: unknown) {
       console.error('OpenAI transcription error:', openaiError);
       
-      let errorMessage = openaiError.message || 'Error transcribing audio';
+      let errorMessage = openaiError instanceof Error ? openaiError.message : String(openaiError);
       
       // Check for API key errors
       if (
@@ -652,7 +822,7 @@ export async function POST(request: NextRequest) {
             updated_at: new Date().toISOString()
           })
           .eq('id', transcriptionData.id);
-      } catch (updateError) {
+      } catch (updateError: unknown) {
         console.error('Error updating transcription status to error:', updateError);
       }
       
@@ -663,14 +833,14 @@ export async function POST(request: NextRequest) {
         details: errorMessage
       }, { status: 500 });
     }
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Unexpected error in transcribe API:', error);
     
     // Ensure the error response is valid JSON
     return NextResponse.json({ 
       success: false,
       error: 'An unexpected error occurred',
-      details: error.message || 'Unknown error'
+      details: error instanceof Error ? error.message : String(error)
     }, { status: 500 });
   }
 }
@@ -685,5 +855,5 @@ export const config = {
   },
   runtime: 'edge',
   regions: ['iad1'], // Use your preferred Vercel region
-  maxDuration: 300, // Increase maximum duration to 5 minutes (in seconds)
+  maxDuration: 600, // Increase maximum duration to 10 minutes (in seconds)
 };
