@@ -67,21 +67,20 @@ export async function POST(request: NextRequest) {
       );
     }
     
-    // Create a service role client for operations that bypass RLS
+    // For operations that need to bypass RLS, try to use service role if available
+    // But fall back to the regular client if not available
+    let supabaseAdmin = supabase;
     const serviceKey = process.env.SUPABASE_SERVICE_KEY;
-    if (!serviceKey) {
-      console.error('Missing Supabase service key');
-      return NextResponse.json(
-        { success: false, error: 'Server configuration error' },
-        { status: 500 }
-      );
+    if (serviceKey) {
+      supabaseAdmin = createClient(supabaseUrl, serviceKey, {
+        auth: {
+          autoRefreshToken: false,
+          persistSession: false
+        }
+      });
+    } else {
+      console.warn('SUPABASE_SERVICE_KEY not found, using regular client which may have RLS restrictions');
     }
-    const supabaseAdmin = createClient(supabaseUrl, serviceKey, {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false
-      }
-    });
     
     // Parse the multipart form data
     const formData = await request.formData();
