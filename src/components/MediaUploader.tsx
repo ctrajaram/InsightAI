@@ -83,125 +83,115 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
 
   // Function to handle large file uploads by chunking
   const uploadLargeFile = async (file: File, userId: string): Promise<UploadedFileInfo> => {
-    setUploadMessage('Preparing to upload large file in chunks...');
-    
-    // Create a unique file ID for this upload
-    const fileId = uuidv4();
-    const fileName = file.name;
-    const fileType = file.type;
-    const fileSize = file.size;
-    const chunkSize = 1 * 1024 * 1024; // 1MB chunks
-    const totalChunks = Math.ceil(fileSize / chunkSize);
-    
-    // Create a unique transcription ID for this upload
-    const transcriptionId = uuidv4();
-    
     try {
-      // Get the current session to retrieve the access token
-      const { data: { session } } = await supabase.auth.getSession();
+      setIsUploading(true);
+      setUploadMessage('Preparing file...');
+      setUploadProgress(5);
       
-      if (!session || !session.access_token) {
-        throw new Error('Authentication required for file upload');
+      const fileSize = file.size;
+      const fileName = file.name;
+      const fileType = file.type;
+      
+      // Create a random file ID for this upload
+      const fileId = uuidv4();
+      
+      // Create a consistent transcription ID to use across all chunks
+      const transcriptionId = uuidv4();
+      
+      // Calculate chunk size - use 1MB chunks to avoid Vercel payload limits
+      const chunkSize = 1024 * 1024; // 1 MB chunks
+      const totalChunks = Math.ceil(fileSize / chunkSize);
+      
+      console.log(`Uploading ${fileName} (${fileSize} bytes) in ${totalChunks} chunks of ${chunkSize} bytes each`);
+      console.log(`File ID: ${fileId}, User ID: ${userId}`);
+      
+      // Get the session for authentication
+      const session = await supabase.auth.getSession();
+      if (!session.data?.session) {
+        throw new Error('Authentication required');
       }
       
-      // Upload each chunk
-      let uploadedChunks = [];
-      let failedChunks = [];
+      // Upload chunks
+      const uploadedChunks: number[] = [];
+      const failedChunks: number[] = [];
+      let lastError = '';
       
+      // Process chunks sequentially with retries
       for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+        // Update progress
+        setUploadProgress(Math.min(90, Math.floor((chunkIndex / totalChunks) * 90)));
+        setUploadMessage(`Uploading chunk ${chunkIndex + 1} of ${totalChunks}...`);
+        
+        // Calculate chunk boundaries
         const start = chunkIndex * chunkSize;
         const end = Math.min(start + chunkSize, fileSize);
         const chunk = file.slice(start, end);
         
-        // Create FormData for the chunk
+        // Create a FormData object for this chunk
         const formData = new FormData();
         formData.append('file', chunk);
+        formData.append('uploadId', fileId);
         formData.append('chunkIndex', chunkIndex.toString());
         formData.append('totalChunks', totalChunks.toString());
-        formData.append('uploadId', fileId);
         formData.append('fileName', fileName);
         formData.append('fileType', fileType);
         formData.append('fileSize', fileSize.toString());
-        formData.append('transcriptionId', transcriptionId); // Use the same transcriptionId for all chunks
+        formData.append('transcriptionId', transcriptionId);
         
-        // Update progress
-        const progress = Math.round(((chunkIndex + 1) / totalChunks) * 90); // Save 10% for finalization
-        setUploadProgress(progress);
-        setUploadMessage(`Uploading chunk ${chunkIndex + 1} of ${totalChunks}...`);
-        
-        // Try up to 3 times per chunk
+        // Track if this chunk was uploaded successfully 
         let chunkUploaded = false;
+        const maxRetries = 3;
         let attempts = 0;
-        let lastError = '';
         
-        while (!chunkUploaded && attempts < 3) {
+        // Try uploading this chunk up to maxRetries times
+        while (!chunkUploaded && attempts < maxRetries) {
           attempts++;
+          
           try {
-            // Upload the chunk
-            console.log(`Uploading chunk ${chunkIndex} (attempt ${attempts})`);
+            // Use a simpler approach with better error handling
+            console.log(`Uploading chunk ${chunkIndex}, attempt ${attempts}`);
+            
             const response = await fetch('/api/upload-chunk', {
               method: 'POST',
               headers: {
-                'Authorization': `Bearer ${session.access_token}`
+                'Authorization': `Bearer ${session.data.session.access_token}`
               },
               body: formData,
             });
             
-            // Clone the response before reading it
+            // Clone the response for potential error handling
             const responseClone = response.clone();
             
-            // Handle response
+            // Check if the request was successful
             if (!response.ok) {
               let errorMessage;
               try {
                 const errorData = await response.json();
-                errorMessage = errorData.error || 'Failed to upload chunk';
+                errorMessage = errorData.error || `HTTP error ${response.status}`;
               } catch (jsonError) {
-                // If JSON parsing fails, try to get text
                 try {
                   errorMessage = await responseClone.text();
                 } catch (textError) {
-                  console.error('Failed to read response body as text:', textError);
-                  errorMessage = 'Failed to upload chunk';
+                  errorMessage = `HTTP error ${response.status}`;
                 }
               }
               
-              // Check for specific error types
-              if (errorMessage.includes('Entity Too Large') || errorMessage.includes('FUNCTION_PAYLOAD_TOO_LARGE')) {
-                throw new Error(`File chunk is too large for server limits. Please try a smaller file or contact support.`);
-              }
-              
+              // Log the error and throw to trigger retry
               lastError = errorMessage;
-              console.error(`Chunk ${chunkIndex} upload failed (attempt ${attempts}):`, errorMessage);
-              
-              // Wait before retrying
-              await new Promise(resolve => setTimeout(resolve, 1000));
-              continue;
+              console.error(`Error uploading chunk ${chunkIndex} (attempt ${attempts}): ${errorMessage}`);
+              throw new Error(errorMessage);
             }
             
-            // Parse the success response
-            const responseData = await response.json();
-            console.log(`Chunk ${chunkIndex} upload response:`, responseData);
-            
-            if (!responseData.success) {
-              lastError = responseData.error || 'Unknown error';
-              console.error(`Chunk ${chunkIndex} reported failure:`, lastError);
-              
-              // Wait before retrying
-              await new Promise(resolve => setTimeout(resolve, 1000));
-              continue;
-            }
-            
-            // Successful upload
+            // If we got here, the chunk was uploaded successfully
+            console.log(`Successfully uploaded chunk ${chunkIndex}`);
             chunkUploaded = true;
             uploadedChunks.push(chunkIndex);
-            console.log(`Successfully uploaded chunk ${chunkIndex} (${uploadedChunks.length}/${totalChunks})`);
           } catch (error: any) {
-            lastError = error.message || 'Unknown error';
+            lastError = error.message;
             console.error(`Exception uploading chunk ${chunkIndex} (attempt ${attempts}):`, error);
             
-            // Wait before retrying
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            // Wait before retrying - use exponential backoff
+            await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, attempts - 1)));
           }
         }
         
@@ -211,15 +201,10 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
           failedChunks.push(chunkIndex);
           
           // If we have too many failed chunks, abort the upload
-          if (failedChunks.length > totalChunks / 3) { // If more than 1/3 of chunks failed
+          if (failedChunks.length > 3) { // Just abort after 3 failed chunks
             throw new Error(`Too many chunk uploads failed. Last error: ${lastError}`);
           }
         }
-      }
-      
-      // Check if we have any failed chunks
-      if (failedChunks.length > 0) {
-        throw new Error(`Failed to upload some chunks: ${failedChunks.join(', ')}. Please try again.`);
       }
       
       // All chunks uploaded, finalize the upload
@@ -251,7 +236,7 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'Authorization': `Bearer ${session.access_token}`
+              'Authorization': `Bearer ${session.data.session.access_token}`
             },
             body: JSON.stringify({
               uploadId: fileId,

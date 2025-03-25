@@ -124,64 +124,10 @@ export async function POST(request: NextRequest) {
       // Convert the file to buffer
       const buffer = Buffer.from(await file.arrayBuffer());
       
-      // First check if 'transcriptions' bucket exists, if not try 'media' or 'storage'
-      // Get the list of buckets to find an appropriate one
-      const { data: buckets, error: bucketError } = await supabase.storage.listBuckets();
+      // Use a fixed bucket name - we know this one exists and is set up properly
+      const bucketName = 'media-files'; // This is the bucket name defined in media-storage.ts
       
-      if (bucketError) {
-        console.error('Error listing storage buckets:', bucketError);
-        return NextResponse.json(
-          { success: false, error: `Failed to access storage: ${bucketError.message}` },
-          { status: 500 }
-        );
-      }
-      
-      // Find a suitable bucket
-      let bucketName = '';
-      if (buckets && buckets.length > 0) {
-        console.log('Available buckets:', buckets.map(b => b.name));
-        // Try to find a bucket with a sensible name for media files
-        const possibleBuckets = ['media', 'uploads', 'files', 'transcriptions', 'attachments', 'audio'];
-        for (const name of possibleBuckets) {
-          if (buckets.some(b => b.name === name)) {
-            bucketName = name;
-            break;
-          }
-        }
-        
-        // If none of the preferred buckets exist, use the first available one
-        if (!bucketName && buckets.length > 0) {
-          bucketName = buckets[0].name;
-        }
-      }
-      
-      // If no buckets exist, try to create one
-      if (!bucketName) {
-        try {
-          const { data: newBucket, error: createError } = await supabase.storage.createBucket('uploads', {
-            public: false,
-          });
-          
-          if (createError) {
-            console.error('Error creating storage bucket:', createError);
-            return NextResponse.json(
-              { success: false, error: `Failed to create storage bucket: ${createError.message}` },
-              { status: 500 }
-            );
-          }
-          
-          bucketName = 'uploads';
-          console.log('Created new storage bucket:', bucketName);
-        } catch (createError: any) {
-          console.error('Error creating storage bucket:', createError);
-          return NextResponse.json(
-            { success: false, error: `Failed to create storage bucket: ${createError.message}` },
-            { status: 500 }
-          );
-        }
-      }
-      
-      console.log(`Using bucket: ${bucketName}`);
+      console.log(`Using fixed bucket: ${bucketName}`);
       
       // Upload the chunk directly to Supabase Storage
       const { data: uploadData, error: uploadError } = await supabase.storage

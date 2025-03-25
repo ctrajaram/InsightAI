@@ -99,7 +99,7 @@ export async function POST(request: NextRequest) {
       
       // Check if the chunk exists in storage
       const { data: chunkData, error: chunkError } = await supabase.storage
-        .from('transcriptions')
+        .from('media-files')
         .download(chunkPath);
       
       if (chunkError || !chunkData) {
@@ -127,45 +127,9 @@ export async function POST(request: NextRequest) {
     
     console.log('All chunks verified. Proceeding with reassembly.');
     
-    // Find a suitable storage bucket
-    const { data: buckets, error: bucketError } = await supabase.storage.listBuckets();
-    
-    if (bucketError) {
-      console.error('Error listing storage buckets:', bucketError);
-      return NextResponse.json(
-        { success: false, error: `Failed to access storage: ${bucketError.message}` },
-        { status: 500 }
-      );
-    }
-    
-    // Find a suitable bucket
-    let bucketName = '';
-    if (buckets && buckets.length > 0) {
-      console.log('Available buckets:', buckets.map(b => b.name));
-      // Try to find a bucket with a sensible name for media files
-      const possibleBuckets = ['media', 'uploads', 'files', 'transcriptions', 'attachments', 'audio'];
-      for (const name of possibleBuckets) {
-        if (buckets.some(b => b.name === name)) {
-          bucketName = name;
-          break;
-        }
-      }
-      
-      // If none of the preferred buckets exist, use the first available one
-      if (!bucketName && buckets.length > 0) {
-        bucketName = buckets[0].name;
-      }
-    }
-    
-    if (!bucketName) {
-      console.error('No storage buckets available');
-      return NextResponse.json(
-        { success: false, error: 'No storage buckets available' },
-        { status: 500 }
-      );
-    }
-    
-    console.log(`Using bucket: ${bucketName}`);
+    // Use the same fixed bucket name as in upload-chunk
+    const bucketName = 'media-files';
+    console.log(`Using fixed bucket: ${bucketName}`);
     
     // Create a buffer to hold the reassembled file
     let fileBuffer = Buffer.alloc(0);
