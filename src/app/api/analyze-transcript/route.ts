@@ -1,3 +1,5 @@
+export const fetchCache = "force-no-store";
+
 import { createClient } from '@supabase/supabase-js';
 import { NextRequest, NextResponse } from 'next/server';
 import OpenAI from 'openai';
@@ -315,16 +317,23 @@ export async function POST(request: NextRequest) {
   } catch (error: any) {
     console.error('Unexpected error in analyze-transcript API:', error);
     
-    return NextResponse.json({
+    // Ensure the error response is valid JSON
+    return NextResponse.json({ 
       success: false,
       error: 'An unexpected error occurred',
-      details: error.message
+      details: error.message || 'Unknown error'
     }, { status: 500 });
   }
 }
 
-// Configure response options
+// Add a global error handler to catch any unexpected errors and format them as JSON
 export const config = {
+  api: {
+    bodyParser: {
+      sizeLimit: '10mb',
+    },
+    externalResolver: true, // This tells Next.js that this route will handle its own errors
+  },
   runtime: 'edge',
   regions: ['iad1'], // Use your preferred Vercel region
 };

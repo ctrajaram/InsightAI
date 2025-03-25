@@ -251,7 +251,21 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       });
       
       if (!response.ok) {
-        const errorData = await response.json();
+        let errorData;
+        try {
+          // First try to parse as JSON
+          errorData = await response.json();
+        } catch (jsonError) {
+          // If JSON parsing fails, try to get the text
+          const errorText = await response.text();
+          console.error('Failed to parse error response as JSON:', errorText);
+          // Create a valid error object from the text
+          errorData = { 
+            error: 'Server error', 
+            details: errorText.substring(0, 100) // Only take first 100 chars to avoid huge errors
+          };
+        }
+        
         const errorMessage = errorData.error || 'Failed to transcribe media';
         
         // Check for OpenAI API key errors
@@ -267,7 +281,13 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
         throw new Error(errorMessage);
       }
       
-      const data = await response.json();
+      let data;
+      try {
+        data = await response.json();
+      } catch (jsonError) {
+        console.error('Failed to parse successful response as JSON');
+        throw new Error('Invalid response from server. Please try again.');
+      }
       
       // Verify that the database was updated correctly
       console.log('Verifying transcription status in database...');
@@ -423,22 +443,36 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ 
-          transcriptionId: finalTranscriptionId,
-          transcriptionText: transcriptionText,
+          transcriptionId,
+          transcriptionText,
           accessToken: accessToken
         }),
         cache: 'no-store'
       });
       
       if (!response.ok) {
-        const errorData = await response.json();
+        let errorData;
+        try {
+          // First try to parse as JSON
+          errorData = await response.json();
+        } catch (jsonError) {
+          // If JSON parsing fails, try to get the text
+          const errorText = await response.text();
+          console.error('Failed to parse error response as JSON:', errorText);
+          // Create a valid error object from the text
+          errorData = { 
+            error: 'Server error', 
+            details: errorText.substring(0, 100) // Only take first 100 chars to avoid huge errors
+          };
+        }
+        
         const errorMessage = errorData.error || 'Failed to generate summary';
         
         throw new Error(errorMessage);
       }
       
       const data = await response.json();
-      console.log('Summary generated successfully');
+      console.log('Summary generated successfully:', data);
       
       // Verify that the database was updated correctly
       console.log('Verifying summary status in database...');
@@ -615,14 +649,23 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       console.log('Analysis API response status:', response.status);
       
       if (!response.ok) {
-        let errorMessage = 'Failed to analyze transcript';
+        let errorData;
         try {
-          const errorData = await response.json();
-          errorMessage = errorData.error || errorMessage;
-        } catch (e) {
-          console.error('Failed to parse error response:', e);
+          // First try to parse as JSON
+          errorData = await response.json();
+        } catch (jsonError) {
+          // If JSON parsing fails, try to get the text
+          const errorText = await response.text();
+          console.error('Failed to parse error response as JSON:', errorText);
+          // Create a valid error object from the text
+          errorData = { 
+            error: 'Server error', 
+            details: errorText.substring(0, 100) // Only take first 100 chars to avoid huge errors
+          };
         }
-        console.error('Analysis API error:', errorMessage);
+        
+        const errorMessage = errorData.error || 'Failed to analyze transcript';
+        
         throw new Error(errorMessage);
       }
       
