@@ -9,6 +9,16 @@ import os from 'os';
 export const fetchCache = 'force-no-store';
 export const dynamic = 'force-dynamic';
 
+// Set appropriate size limits for the API route
+export const config = {
+  api: {
+    bodyParser: {
+      sizeLimit: '2mb', // This endpoint only receives metadata, not file content
+    },
+    externalResolver: true,
+  },
+};
+
 // Temp directory for storing chunks
 const TEMP_DIR = path.join(os.tmpdir(), 'insight-ai-uploads');
 

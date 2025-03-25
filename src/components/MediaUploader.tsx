@@ -78,7 +78,7 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
   const analysisAttempts = useRef<Set<string>>(new Set());
 
   // Constants for file chunking
-  const MAX_CHUNK_SIZE = 5 * 1024 * 1024; // 5MB chunks
+  const MAX_CHUNK_SIZE = 1 * 1024 * 1024; // 1MB chunks
   const MAX_DIRECT_UPLOAD_SIZE = 15 * 1024 * 1024; // 15MB threshold for direct upload
 
   // Function to handle large file uploads by chunking
@@ -90,7 +90,7 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
     const fileName = file.name;
     const fileType = file.type;
     const fileSize = file.size;
-    const chunkSize = 5 * 1024 * 1024; // 5MB chunks
+    const chunkSize = 1 * 1024 * 1024; // 1MB chunks
     const totalChunks = Math.ceil(fileSize / chunkSize);
     
     try {
@@ -132,10 +132,22 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
             errorMessage = errorData.error || 'Failed to upload chunk';
           } catch (jsonError) {
             // If JSON parsing fails, try to get text
-            errorMessage = await responseClone.text();
+            try {
+              errorMessage = await responseClone.text();
+            } catch (textError) {
+              console.error('Failed to read response body as text:', textError);
+              errorMessage = 'Failed to upload chunk';
+            }
           }
+          
+          // Check for specific error types
+          if (errorMessage.includes('Entity Too Large') || errorMessage.includes('FUNCTION_PAYLOAD_TOO_LARGE')) {
+            throw new Error(`File chunk is too large for server limits. Please try a smaller file or contact support.`);
+          }
+          
           throw new Error(`Chunk upload failed: ${errorMessage}`);
         }
+        
       }
       
       // All chunks uploaded, finalize the upload
@@ -166,7 +178,13 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
           errorMessage = errorData.error || 'Failed to finalize upload';
         } catch (jsonError) {
           // If JSON parsing fails, try to get text
-          errorMessage = await finalizeResponseClone.text();
+          try {
+            const errorText = await finalizeResponseClone.text();
+            errorMessage = errorText || 'Failed to finalize upload';
+          } catch (textError) {
+            console.error('Failed to read response body as text:', textError);
+            errorMessage = 'Failed to finalize upload';
+          }
         }
         throw new Error(`Finalize upload failed: ${errorMessage}`);
       }
