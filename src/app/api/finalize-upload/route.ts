@@ -49,6 +49,7 @@ export async function POST(request: NextRequest) {
       );
     }
     
+    // Create two Supabase clients - one for auth and one with service role for storage operations
     const supabase = createClient(supabaseUrl, supabaseKey);
     const { data: { user }, error: authError } = await supabase.auth.getUser(token);
     
@@ -59,6 +60,22 @@ export async function POST(request: NextRequest) {
         { status: 401 }
       );
     }
+    
+    // Create a service role client for storage operations that bypass RLS
+    const serviceKey = process.env.SUPABASE_SERVICE_KEY;
+    if (!serviceKey) {
+      console.error('Missing Supabase service key');
+      return NextResponse.json(
+        { success: false, error: 'Server configuration error' },
+        { status: 500 }
+      );
+    }
+    const supabaseAdmin = createClient(supabaseUrl, serviceKey, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false
+      }
+    });
     
     // Parse the request body
     const body = await request.json();
@@ -116,9 +133,9 @@ export async function POST(request: NextRequest) {
     // Use the authenticated user's ID
     const userId = user.id;
 
-    // Upload the reassembled file to Supabase Storage
+    // Upload the reassembled file to Supabase Storage using the admin client
     const filePath = `${userId}/${Date.now()}_${fileName}`;
-    const { data: uploadData, error: uploadError } = await supabase.storage
+    const { data: uploadData, error: uploadError } = await supabaseAdmin.storage
       .from('media-files')
       .upload(filePath, fileBuffer, {
         contentType: fileType,
@@ -134,7 +151,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Get the public URL for the uploaded file
-    const { data: { publicUrl } } = supabase.storage
+    const { data: { publicUrl } } = supabaseAdmin.storage
       .from('media-files')
       .getPublicUrl(filePath);
 

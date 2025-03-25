@@ -55,6 +55,7 @@ export async function POST(request: NextRequest) {
       );
     }
     
+    // Create a client for authentication
     const supabase = createClient(supabaseUrl, supabaseKey);
     const { data: { user }, error: authError } = await supabase.auth.getUser(token);
     
@@ -65,6 +66,22 @@ export async function POST(request: NextRequest) {
         { status: 401 }
       );
     }
+    
+    // Create a service role client for operations that bypass RLS
+    const serviceKey = process.env.SUPABASE_SERVICE_KEY;
+    if (!serviceKey) {
+      console.error('Missing Supabase service key');
+      return NextResponse.json(
+        { success: false, error: 'Server configuration error' },
+        { status: 500 }
+      );
+    }
+    const supabaseAdmin = createClient(supabaseUrl, serviceKey, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false
+      }
+    });
     
     // Parse the multipart form data
     const formData = await request.formData();
