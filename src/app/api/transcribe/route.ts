@@ -36,14 +36,33 @@ async function retryOperation<T>(
 
 export async function POST(request: NextRequest) {
   try {
-    // Parse request body
-    const { transcriptionId, mediaUrl, accessToken, record } = await request.json();
+    // Parse request body with error handling
+    let body;
+    try {
+      body = await request.json();
+    } catch (parseError) {
+      console.error('Failed to parse request body as JSON:', parseError);
+      return NextResponse.json({ 
+        error: 'Invalid JSON in request body',
+        details: 'Please ensure the request body is valid JSON'
+      }, { status: 400 });
+    }
     
-    // Basic validation
-    if (!transcriptionId || !mediaUrl) {
-      console.error('Missing required fields for transcription');
+    const { transcriptionId, mediaUrl, accessToken, record } = body;
+    
+    // Basic validation with detailed error messages
+    if (!transcriptionId) {
+      console.error('Missing required field: transcriptionId');
       return NextResponse.json(
-        { error: 'Missing required fields: transcriptionId or mediaUrl' }, 
+        { error: 'Missing required field: transcriptionId' }, 
+        { status: 400 }
+      );
+    }
+    
+    if (!mediaUrl) {
+      console.error('Missing required field: mediaUrl');
+      return NextResponse.json(
+        { error: 'Missing required field: mediaUrl' }, 
         { status: 400 }
       );
     }
@@ -101,8 +120,8 @@ export async function POST(request: NextRequest) {
         }, 5, 1000); // 5 retries with a 1 second initial delay
         
         console.log('Successfully found transcription record after retries:', transcriptionData);
-      } catch (retryError) {
-        console.error('All retry attempts failed to find transcription record');
+      } catch (retryError: any) {
+        console.error('All retry attempts failed to find transcription record:', retryError.message);
         
         // Last attempt to find any recent transcriptions for this user
         const { data: userTranscriptions } = await supabase
@@ -291,77 +310,113 @@ export async function POST(request: NextRequest) {
       );
     }
     
-    // Transcribe audio
+    // Transcribe audio with timeout handling
     try {
-      // Fetch the file and prepare it for OpenAI
-      const audioResponse = await fetch(presignedUrlData.signedUrl);
-      if (!audioResponse.ok) {
-        throw new Error(`Failed to fetch audio file: ${audioResponse.status} ${audioResponse.statusText}`);
-      }
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 180000); // 3 minute timeout for audio processing
       
-      const audioBlob = await audioResponse.blob();
-      
-      // Create a File object from the Blob
-      const audioFile = new File(
-        [audioBlob], 
-        mediaFileName || 'audio.mp3', 
-        { type: audioBlob.type || 'audio/mpeg' }
-      );
-      
-      const transcription = await openai.audio.transcriptions.create({
-        file: audioFile,
-        model: 'whisper-1',
-      });
-      
-      // Update transcription record with results - with retry
       try {
-        console.log('Attempting to update transcription record with status: completed');
-        console.log('Transcription ID:', transcriptionData.id);
-        console.log('Transcript length:', transcription.text.length, 'characters');
+        // Fetch the file and prepare it for OpenAI
+        const audioResponse = await fetch(presignedUrlData.signedUrl, { signal: controller.signal });
+        if (!audioResponse.ok) {
+          throw new Error(`Failed to fetch audio file: ${audioResponse.status} ${audioResponse.statusText}`);
+        }
         
-        await retryOperation(async () => {
-          console.log('Executing database update...');
-          const updateResult = await supabase
+        const audioBlob = await audioResponse.blob();
+        
+        // Create a File object from the Blob
+        const audioFile = new File(
+          [audioBlob], 
+          mediaFileName || 'audio.mp3', 
+          { type: audioBlob.type || 'audio/mpeg' }
+        );
+        
+        const transcription = await openai.audio.transcriptions.create({
+          file: audioFile,
+          model: 'whisper-1',
+        }, { signal: controller.signal });
+        
+        clearTimeout(timeoutId); // Clear the timeout if the request completes successfully
+        
+        // Update transcription record with results - with retry
+        try {
+          console.log('Attempting to update transcription record with status: completed');
+          console.log('Transcription ID:', transcriptionData.id);
+          console.log('Transcript length:', transcription.text.length, 'characters');
+          
+          await retryOperation(async () => {
+            console.log('Executing database update...');
+            const updateResult = await supabase
+              .from('transcriptions')
+              .update({
+                status: 'completed',
+                transcription_text: transcription.text,
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', transcriptionData.id)
+              .select();
+            
+            if (updateResult.error) {
+              console.error('Error updating transcription results:', updateResult.error);
+              throw updateResult.error;
+            }
+            
+            console.log('Update successful:', updateResult.data);
+            
+            // Double-check the update
+            const verifyResult = await supabase
+              .from('transcriptions')
+              .select('id, status, transcription_text')
+              .eq('id', transcriptionData.id)
+              .single();
+              
+            console.log('Verified record after update:', verifyResult.data);
+            
+            return updateResult;
+          }, 3, 1000);
+          
+          console.log('Successfully updated transcription status to completed');
+        } catch (updateError) {
+          console.error('All attempts to update transcription record failed:', updateError);
+          
+          // Even though we failed to update the record, we can still return the transcription text
+          return NextResponse.json({
+            success: true,
+            transcriptionId: transcriptionData.id,
+            text: transcription.text,
+            warning: 'Transcription was generated but failed to update the database record',
+          });
+        }
+        
+        return NextResponse.json({
+          success: true,
+          transcriptionId: transcriptionData.id,
+          text: transcription.text,
+        });
+      } catch (error: any) {
+        clearTimeout(timeoutId); // Clear the timeout
+        
+        if (error.name === 'AbortError' || error.code === 'ETIMEDOUT') {
+          console.error('Request timed out after 3 minutes');
+          
+          // Update status to error
+          await supabase
             .from('transcriptions')
             .update({
-              status: 'completed',
-              transcription_text: transcription.text,
+              status: 'error',
+              error: 'Transcription process timed out',
               updated_at: new Date().toISOString()
             })
-            .eq('id', transcriptionData.id)
-            .select();
-          
-          if (updateResult.error) {
-            console.error('Error updating transcription results:', updateResult.error);
-            throw updateResult.error;
-          }
-          
-          console.log('Update successful:', updateResult.data);
-          
-          // Double-check the update
-          const verifyResult = await supabase
-            .from('transcriptions')
-            .select('id, status, transcription_text')
-            .eq('id', transcriptionData.id)
-            .single();
+            .eq('id', transcriptionData.id);
             
-          console.log('Verified record after update:', verifyResult.data);
-          
-          return updateResult;
-        }, 3, 1000);
+          return NextResponse.json({ 
+            error: 'The transcription process timed out',
+            details: 'The file may be too large or the service is currently experiencing high load. Please try again later or with a shorter audio file.'
+          }, { status: 504 }); // Gateway Timeout
+        }
         
-        console.log('Successfully updated transcription status to completed');
-      } catch (updateError) {
-        console.error('All attempts to update transcription record failed:', updateError);
-        throw updateError;
+        throw error; // Re-throw the error to be handled by the outer catch block
       }
-      
-      return NextResponse.json({
-        success: true,
-        transcriptionId: transcriptionData.id,
-        text: transcription.text,
-      });
-      
     } catch (openaiError: any) {
       console.error('OpenAI transcription error:', openaiError);
       
@@ -376,41 +431,42 @@ export async function POST(request: NextRequest) {
         errorMessage = 'Invalid OpenAI API key. Please check your API key configuration.';
       }
       
-      // Update transcription record with error - with retry
-      await retryOperation(async () => {
-        const { error } = await supabase
+      // Check for file format errors
+      if (
+        errorMessage.includes('format') || 
+        errorMessage.includes('decode') ||
+        errorMessage.includes('unsupported')
+      ) {
+        errorMessage = 'Unsupported audio format. Please upload an MP3 or MP4 file.';
+      }
+      
+      // Update transcription record with error
+      try {
+        await supabase
           .from('transcriptions')
           .update({
             status: 'error',
             error: errorMessage,
+            updated_at: new Date().toISOString()
           })
           .eq('id', transcriptionData.id);
-          
-        if (error) {
-          console.error('Error updating error status:', error);
-          throw error;
-        }
-      });
-      
-      if (openaiError.response && openaiError.response.status === 400) {
-        return NextResponse.json(
-          { error: errorMessage },
-          { status: 400 }
-        );
+      } catch (updateError) {
+        console.error('Error updating transcription status to error:', updateError);
       }
       
-      return NextResponse.json(
-        { error: errorMessage },
-        { status: 500 }
-      );
+      return NextResponse.json({ 
+        error: 'Transcription failed',
+        details: errorMessage
+      }, { status: 500 });
     }
     
   } catch (error: any) {
-    console.error('Transcription API error:', error);
-    return NextResponse.json(
-      { error: error.message || 'An error occurred during transcription' },
-      { status: 500 }
-    );
+    console.error('Unexpected error in transcribe API:', error);
+    
+    return NextResponse.json({ 
+      error: 'An unexpected error occurred',
+      details: error.message || 'Unknown error'
+    }, { status: 500 });
   }
 }
 
@@ -418,4 +474,4 @@ export async function POST(request: NextRequest) {
 export const config = {
   runtime: 'edge',
   regions: ['iad1'], // Use your preferred Vercel region
-}; 
+};
