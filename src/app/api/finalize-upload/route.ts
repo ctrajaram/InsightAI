@@ -21,8 +21,31 @@ export const config = {
   },
 };
 
-// Temp directory for storing chunks
-const TEMP_DIR = path.join(os.tmpdir(), 'insight-ai-uploads');
+// Create a temporary directory for storing chunks
+// Use project directory instead of system temp which might get cleaned up
+const TEMP_DIR = process.env.NODE_ENV === 'production' 
+  ? path.join(os.tmpdir(), 'insight-ai-uploads')
+  : path.join(process.cwd(), 'tmp', 'uploads');
+
+// Ensure temp directory exists
+if (!fs.existsSync(TEMP_DIR)) {
+  try {
+    fs.mkdirSync(TEMP_DIR, { recursive: true });
+    console.log(`Created temporary upload directory: ${TEMP_DIR}`);
+  } catch (dirError) {
+    console.error(`Failed to create temporary directory ${TEMP_DIR}:`, dirError);
+    // Fallback to a different directory if creation fails
+    const fallbackDir = path.join(process.cwd(), 'tmp', 'fallback-uploads');
+    try {
+      fs.mkdirSync(fallbackDir, { recursive: true });
+      console.log(`Created fallback upload directory: ${fallbackDir}`);
+      // Override TEMP_DIR with the fallback
+      (TEMP_DIR as any) = fallbackDir;
+    } catch (fallbackError) {
+      console.error(`Failed to create fallback directory:`, fallbackError);
+    }
+  }
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -89,14 +112,49 @@ export async function POST(request: NextRequest) {
     }
 
     // Verify all chunks are present
+    let missingChunks = [];
     for (let i = 0; i < totalChunks; i++) {
       const chunkPath = path.join(uploadDir, `chunk-${i}`);
+      console.log(`Checking for chunk ${i} at path: ${chunkPath}`);
+      
       if (!fs.existsSync(chunkPath)) {
-        return NextResponse.json(
-          { success: false, error: `Missing chunk ${i}` },
-          { status: 400 }
-        );
+        console.error(`Missing chunk ${i} at path: ${chunkPath}`);
+        missingChunks.push(i);
+      } else {
+        try {
+          const stats = fs.statSync(chunkPath);
+          if (stats.size === 0) {
+            console.error(`Chunk ${i} exists but is empty (0 bytes)`);
+            missingChunks.push(i);
+          } else {
+            console.log(`Found chunk ${i} (${stats.size} bytes)`);
+          }
+        } catch (statError) {
+          console.error(`Error checking chunk ${i}:`, statError);
+          missingChunks.push(i);
+        }
       }
+    }
+    
+    if (missingChunks.length > 0) {
+      // List contents of upload directory for debugging
+      try {
+        const dirContents = fs.readdirSync(uploadDir);
+        console.log(`Contents of ${uploadDir}:`, dirContents);
+      } catch (readError) {
+        console.error(`Error reading upload directory:`, readError);
+      }
+      
+      return NextResponse.json(
+        { 
+          success: false, 
+          error: `Missing chunks: ${missingChunks.join(', ')}`,
+          uploadId,
+          totalChunks,
+          uploadDir: uploadDir.replace(/\\/g, '/') // For debugging
+        },
+        { status: 400 }
+      );
     }
 
     // Create a temporary file to reassemble the chunks
@@ -119,6 +177,7 @@ export async function POST(request: NextRequest) {
 
     // Read the reassembled file
     const fileBuffer = fs.readFileSync(tempFilePath);
+    console.log(`Reassembled file size: ${fileBuffer.length} bytes`);
 
     // Upload the reassembled file to Supabase Storage using direct REST API
     // This approach bypasses RLS policies completely

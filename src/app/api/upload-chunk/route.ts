@@ -21,11 +21,29 @@ export const config = {
 };
 
 // Create a temporary directory for storing chunks
-const TEMP_DIR = path.join(os.tmpdir(), 'insight-ai-uploads');
+// Use project directory instead of system temp which might get cleaned up
+const TEMP_DIR = process.env.NODE_ENV === 'production' 
+  ? path.join(os.tmpdir(), 'insight-ai-uploads')
+  : path.join(process.cwd(), 'tmp', 'uploads');
 
 // Ensure temp directory exists
 if (!fs.existsSync(TEMP_DIR)) {
-  fs.mkdirSync(TEMP_DIR, { recursive: true });
+  try {
+    fs.mkdirSync(TEMP_DIR, { recursive: true });
+    console.log(`Created temporary upload directory: ${TEMP_DIR}`);
+  } catch (dirError) {
+    console.error(`Failed to create temporary directory ${TEMP_DIR}:`, dirError);
+    // Fallback to a different directory if creation fails
+    const fallbackDir = path.join(process.cwd(), 'tmp', 'fallback-uploads');
+    try {
+      fs.mkdirSync(fallbackDir, { recursive: true });
+      console.log(`Created fallback upload directory: ${fallbackDir}`);
+      // Override TEMP_DIR with the fallback
+      (TEMP_DIR as any) = fallbackDir;
+    } catch (fallbackError) {
+      console.error(`Failed to create fallback directory:`, fallbackError);
+    }
+  }
 }
 
 export async function POST(request: NextRequest) {
@@ -99,7 +117,36 @@ export async function POST(request: NextRequest) {
     // Write the chunk to disk
     const chunkPath = path.join(uploadDir, `chunk-${chunkIndex}`);
     const buffer = Buffer.from(await file.arrayBuffer());
-    fs.writeFileSync(chunkPath, buffer);
+    
+    try {
+      fs.writeFileSync(chunkPath, buffer);
+      
+      // Verify the chunk was written successfully
+      if (!fs.existsSync(chunkPath)) {
+        console.error(`Failed to write chunk ${chunkIndex} to ${chunkPath} (file doesn't exist after write)`);
+        return NextResponse.json(
+          { success: false, error: `Failed to save chunk ${chunkIndex}` },
+          { status: 500 }
+        );
+      }
+      
+      const stats = fs.statSync(chunkPath);
+      if (stats.size === 0) {
+        console.error(`Chunk ${chunkIndex} was written but is empty (0 bytes)`);
+        return NextResponse.json(
+          { success: false, error: `Chunk ${chunkIndex} is empty` },
+          { status: 500 }
+        );
+      }
+      
+      console.log(`Successfully wrote chunk ${chunkIndex} (${stats.size} bytes) to ${chunkPath}`);
+    } catch (writeError: any) {
+      console.error(`Error writing chunk ${chunkIndex} to disk:`, writeError);
+      return NextResponse.json(
+        { success: false, error: `Failed to save chunk: ${writeError.message}` },
+        { status: 500 }
+      );
+    }
 
     // Create a metadata file if this is the first chunk
     if (chunkIndex === 0) {
@@ -124,7 +171,8 @@ export async function POST(request: NextRequest) {
       message: `Chunk ${chunkIndex + 1}/${totalChunks} uploaded successfully`,
       chunkIndex,
       totalChunks,
-      uploadId
+      uploadId,
+      chunkPath: chunkPath.replace(/\\/g, '/') // For debugging
     });
   } catch (error: any) {
     console.error('Error uploading chunk:', error);
