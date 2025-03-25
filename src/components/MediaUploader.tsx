@@ -251,19 +251,30 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       });
       
       if (!response.ok) {
+        // Clone the response so we can read it multiple times if needed
+        const responseClone = response.clone();
+        
         let errorData;
         try {
           // First try to parse as JSON
           errorData = await response.json();
         } catch (jsonError) {
           // If JSON parsing fails, try to get the text
-          const errorText = await response.text();
-          console.error('Failed to parse error response as JSON:', errorText);
-          // Create a valid error object from the text
-          errorData = { 
-            error: 'Server error', 
-            details: errorText.substring(0, 100) // Only take first 100 chars to avoid huge errors
-          };
+          try {
+            const errorText = await responseClone.text();
+            console.error('Failed to parse error response as JSON:', errorText);
+            // Create a valid error object from the text
+            errorData = { 
+              error: 'Server error', 
+              details: errorText.substring(0, 100) // Only take first 100 chars to avoid huge errors
+            };
+          } catch (textError) {
+            console.error('Failed to read response body as text:', textError);
+            errorData = {
+              error: 'Server error',
+              details: 'Could not read server response'
+            };
+          }
         }
         
         const errorMessage = errorData.error || 'Failed to transcribe media';
@@ -281,11 +292,20 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
         throw new Error(errorMessage);
       }
       
+      // Clone the response so we can read it multiple times if needed
+      const responseClone = response.clone();
+      
       let data;
       try {
         data = await response.json();
       } catch (jsonError) {
         console.error('Failed to parse successful response as JSON');
+        try {
+          const responseText = await responseClone.text();
+          console.error('Raw response:', responseText.substring(0, 200)); // Log first 200 chars
+        } catch (textError) {
+          console.error('Could not read response body');
+        }
         throw new Error('Invalid response from server. Please try again.');
       }
       
@@ -451,19 +471,30 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       });
       
       if (!response.ok) {
+        // Clone the response so we can read it multiple times if needed
+        const responseClone = response.clone();
+        
         let errorData;
         try {
           // First try to parse as JSON
           errorData = await response.json();
         } catch (jsonError) {
           // If JSON parsing fails, try to get the text
-          const errorText = await response.text();
-          console.error('Failed to parse error response as JSON:', errorText);
-          // Create a valid error object from the text
-          errorData = { 
-            error: 'Server error', 
-            details: errorText.substring(0, 100) // Only take first 100 chars to avoid huge errors
-          };
+          try {
+            const errorText = await responseClone.text();
+            console.error('Failed to parse error response as JSON:', errorText);
+            // Create a valid error object from the text
+            errorData = { 
+              error: 'Server error', 
+              details: errorText.substring(0, 100) // Only take first 100 chars to avoid huge errors
+            };
+          } catch (textError) {
+            console.error('Failed to read response body as text:', textError);
+            errorData = {
+              error: 'Server error',
+              details: 'Could not read server response'
+            };
+          }
         }
         
         const errorMessage = errorData.error || 'Failed to generate summary';
@@ -471,7 +502,23 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
         throw new Error(errorMessage);
       }
       
-      const data = await response.json();
+      // Clone the response so we can read it multiple times if needed
+      const responseClone = response.clone();
+      
+      let data;
+      try {
+        data = await response.json();
+      } catch (jsonError) {
+        console.error('Failed to parse successful response as JSON');
+        try {
+          const responseText = await responseClone.text();
+          console.error('Raw response:', responseText.substring(0, 200)); // Log first 200 chars
+        } catch (textError) {
+          console.error('Could not read response body');
+        }
+        throw new Error('Invalid response from server. Please try again.');
+      }
+      
       console.log('Summary generated successfully:', data);
       
       // Verify that the database was updated correctly
@@ -649,19 +696,30 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       console.log('Analysis API response status:', response.status);
       
       if (!response.ok) {
+        // Clone the response so we can read it multiple times if needed
+        const responseClone = response.clone();
+        
         let errorData;
         try {
           // First try to parse as JSON
           errorData = await response.json();
         } catch (jsonError) {
           // If JSON parsing fails, try to get the text
-          const errorText = await response.text();
-          console.error('Failed to parse error response as JSON:', errorText);
-          // Create a valid error object from the text
-          errorData = { 
-            error: 'Server error', 
-            details: errorText.substring(0, 100) // Only take first 100 chars to avoid huge errors
-          };
+          try {
+            const errorText = await responseClone.text();
+            console.error('Failed to parse error response as JSON:', errorText);
+            // Create a valid error object from the text
+            errorData = { 
+              error: 'Server error', 
+              details: errorText.substring(0, 100) // Only take first 100 chars to avoid huge errors
+            };
+          } catch (textError) {
+            console.error('Failed to read response body as text:', textError);
+            errorData = {
+              error: 'Server error',
+              details: 'Could not read server response'
+            };
+          }
         }
         
         const errorMessage = errorData.error || 'Failed to analyze transcript';
@@ -669,7 +727,23 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
         throw new Error(errorMessage);
       }
       
-      const data = await response.json();
+      // Clone the response so we can read it multiple times if needed
+      const responseClone = response.clone();
+      
+      let data;
+      try {
+        data = await response.json();
+      } catch (jsonError) {
+        console.error('Failed to parse successful response as JSON');
+        try {
+          const responseText = await responseClone.text();
+          console.error('Raw response:', responseText.substring(0, 200)); // Log first 200 chars
+        } catch (textError) {
+          console.error('Could not read response body');
+        }
+        throw new Error('Invalid response from server. Please try again.');
+      }
+      
       console.log('Analysis generated successfully:', data);
       
       // Save the analysis data to Supabase
