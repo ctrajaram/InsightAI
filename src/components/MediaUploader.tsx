@@ -1765,19 +1765,10 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       // Maximum number of retries
       const MAX_RETRIES = 3;
       // Timeout for the analysis request (in milliseconds)
-      const ANALYSIS_TIMEOUT = 45000; // 45 seconds
-      // Maximum text length to analyze
-      const MAX_TEXT_LENGTH = 15000;
+      const ANALYSIS_TIMEOUT = 120000; // 2 minutes
       
       let retryCount = 0;
       let success = false;
-      let textToAnalyze = text;
-      
-      // If text is too long, truncate it
-      if (text.length > MAX_TEXT_LENGTH) {
-        console.log(`Transcription text too long (${text.length} chars), truncating to ${MAX_TEXT_LENGTH} chars`);
-        textToAnalyze = text.substring(0, MAX_TEXT_LENGTH);
-      }
       
       while (retryCount < MAX_RETRIES && !success) {
         try {
@@ -1787,13 +1778,6 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
           
           console.log(`Analysis attempt ${retryCount + 1} for transcription ${transcriptionId}`);
           
-          // If we've had to retry, make the text even shorter
-          if (retryCount > 0 && textToAnalyze.length > MAX_TEXT_LENGTH / (retryCount + 1)) {
-            const newLength = Math.floor(MAX_TEXT_LENGTH / (retryCount + 1));
-            console.log(`Retry ${retryCount}: Reducing text length to ${newLength} chars`);
-            textToAnalyze = text.substring(0, newLength);
-          }
-          
           const response = await fetch('/api/analyze', {
             method: 'POST',
             headers: {
@@ -1801,7 +1785,7 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
             },
             body: JSON.stringify({
               transcriptionId,
-              transcriptionText: textToAnalyze,
+              transcriptionText: text, // Pass the text directly to the API
             }),
             signal: controller.signal,
           });
@@ -1842,7 +1826,7 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
           
           // Check if this was a timeout
           if (error.name === 'AbortError' || error.message.includes('timeout') || error.message.includes('FUNCTION_INVOCATION_TIMEOUT')) {
-            console.log('Analysis timed out, will retry with a shorter text segment');
+            console.log('Analysis timed out, will retry');
           }
           
           // If we've exhausted all retries, mark as failed
@@ -1899,7 +1883,7 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
           {transcriptionRecord && renderStatusBanner()}
           
           {/* File upload section with modern design */}
-          <div className="mb-8 rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+          <div className="mb-8 rounded-xl border border-gray-200 bg-white shadow-md overflow-hidden">
             <div className="p-6 sm:p-8 bg-gradient-to-r from-indigo-50 to-purple-50 border-b border-gray-200">
               <h2 className="text-xl font-semibold mb-2 text-gray-800">Upload Interview</h2>
               <p className="text-gray-600">Upload audio or video files to transcribe and analyze customer interviews</p>

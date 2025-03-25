@@ -7,13 +7,30 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+// Set a longer timeout for this route (10 minutes)
+export const maxDuration = 600; // 10 minutes in seconds
+
+// Set a larger body size limit
+export const config = {
+  api: {
+    bodyParser: {
+      sizeLimit: '10mb',
+    },
+    responseLimit: false,
+  },
+};
+
+// Maximum text length to analyze
+const MAX_TEXT_LENGTH = 15000;
+
 export async function POST(req: Request) {
   try {
     // Parse request body
     const body = await req.json();
-    const { transcriptionId } = body;
+    const { transcriptionId, transcriptionText } = body;
 
     console.log('API Request received for transcriptionId:', transcriptionId);
+    console.log('Transcription text length:', transcriptionText?.length || 'Not provided');
 
     if (!transcriptionId || typeof transcriptionId !== 'string' || transcriptionId.trim() === '') {
       return NextResponse.json({ error: 'Valid transcription ID is required' }, { status: 400 });
@@ -37,71 +54,45 @@ export async function POST(req: Request) {
     );
     console.log('Supabase client created successfully');
 
-    // First, check if the table exists and what fields it has
-    console.log('Checking transcriptions table structure...');
-    const { data: tableInfo, error: tableError } = await supabase
-      .from('transcriptions')
-      .select('*')
-      .limit(1);
-      
-    if (tableError) {
-      console.error('Error checking table structure:', tableError);
-      console.error('Error code:', tableError.code);
-      console.error('Error message:', tableError.message);
-      console.error('Error details:', tableError.details);
+    // If transcription text is provided directly, use it
+    let finalTranscriptionText = '';
+    
+    if (transcriptionText && typeof transcriptionText === 'string') {
+      console.log('Using provided transcription text');
+      finalTranscriptionText = transcriptionText;
     } else {
-      console.log('Table structure sample:', tableInfo);
-      console.log('Table fields:', tableInfo && tableInfo.length > 0 ? Object.keys(tableInfo[0]) : 'No records found');
-    }
-
-    // Try to get the transcription directly
-    console.log('Querying for transcription with ID:', cleanTranscriptionId);
-    const { data: transcription, error: directError } = await supabase
-      .from('transcriptions')
-      .select('*')
-      .eq('id', cleanTranscriptionId)
-      .single();
-      
-    if (directError) {
-      console.error('Error fetching transcription:', directError);
-      console.error('Error code:', directError.code);
-      console.error('Error message:', directError.message);
-      console.error('Error details:', directError.details);
-      
-      // Try to get all transcriptions to see what's available
-      console.log('Attempting to list all transcriptions...');
-      const { data: allTranscriptions, error: listError } = await supabase
+      // Otherwise, fetch from database
+      console.log('Querying for transcription with ID:', cleanTranscriptionId);
+      const { data: transcription, error: directError } = await supabase
         .from('transcriptions')
-        .select('id, created_at, status')
-        .order('created_at', { ascending: false });
+        .select('*')
+        .eq('id', cleanTranscriptionId)
+        .single();
         
-      if (listError) {
-        console.error('Error listing transcriptions:', listError);
-      } else {
-        console.log('Recent transcriptions:', allTranscriptions);
+      if (directError) {
+        console.error('Error fetching transcription:', directError);
+        return NextResponse.json({ 
+          error: 'Transcription not found',
+          details: directError.message || 'No matching record found with ID: ' + cleanTranscriptionId
+        }, { status: 404 });
       }
-      
-      return NextResponse.json({ 
-        error: 'Transcription not found',
-        details: directError.message || 'No matching record found with ID: ' + cleanTranscriptionId
-      }, { status: 404 });
-    }
 
-    if (!transcription) {
-      console.error('No transcription found with ID:', cleanTranscriptionId);
-      return NextResponse.json({ 
-        error: 'Transcription not found',
-        details: 'No matching record found with ID: ' + cleanTranscriptionId
-      }, { status: 404 });
-    }
+      if (!transcription) {
+        console.error('No transcription found with ID:', cleanTranscriptionId);
+        return NextResponse.json({ 
+          error: 'Transcription not found',
+          details: 'No matching record found with ID: ' + cleanTranscriptionId
+        }, { status: 404 });
+      }
 
-    console.log('Found transcription record:', transcription);
+      console.log('Found transcription record:', transcription);
 
-    // Check if transcription text exists - use the field name from the database
-    const transcriptionText = transcription.transcription_text;
-    if (!transcriptionText) {
-      console.error('Transcription text is empty in record:', transcription);
-      return NextResponse.json({ error: 'Transcription text is empty' }, { status: 400 });
+      // Check if transcription text exists - use the field name from the database
+      finalTranscriptionText = transcription.transcription_text;
+      if (!finalTranscriptionText) {
+        console.error('Transcription text is empty in record:', transcription);
+        return NextResponse.json({ error: 'Transcription text is empty' }, { status: 400 });
+      }
     }
 
     // Update analysis status to processing - using the field names from the database
@@ -112,10 +103,28 @@ export async function POST(req: Request) {
         analysis_status: 'processing',
         updated_at: new Date().toISOString()
       })
-      .eq('id', transcription.id);
+      .eq('id', cleanTranscriptionId);
 
     if (updateStatusError) {
       console.error('Error updating analysis status:', updateStatusError);
+    }
+
+    // Truncate text if it's too long to avoid timeouts
+    let textToAnalyze = finalTranscriptionText;
+    if (finalTranscriptionText.length > MAX_TEXT_LENGTH) {
+      console.log(`Transcription text too long (${finalTranscriptionText.length} chars), truncating to ${MAX_TEXT_LENGTH} chars`);
+      
+      // Take the first part, middle part, and last part to get a representative sample
+      const firstPart = finalTranscriptionText.substring(0, MAX_TEXT_LENGTH * 0.5);
+      const middlePart = finalTranscriptionText.substring(
+        Math.floor(finalTranscriptionText.length / 2 - MAX_TEXT_LENGTH * 0.25),
+        Math.floor(finalTranscriptionText.length / 2 + MAX_TEXT_LENGTH * 0.25)
+      );
+      const lastPart = finalTranscriptionText.substring(
+        finalTranscriptionText.length - MAX_TEXT_LENGTH * 0.25
+      );
+      
+      textToAnalyze = `${firstPart}\n\n[...middle content omitted...]\n\n${middlePart}\n\n[...more content omitted...]\n\n${lastPart}`;
     }
 
     // Prepare prompt for GPT-4
@@ -154,20 +163,22 @@ Format your response as a valid JSON object with the following structure:
   ]
 }
 
+Note: This transcript may have been truncated due to its length. Focus on the available content to provide the best analysis possible.
+
 Transcript:
-${transcriptionText}
+${textToAnalyze}
 `;
 
-    // Call OpenAI API
-    console.log('Calling OpenAI API...');
+    // Call OpenAI API with optimized parameters
+    console.log('Calling OpenAI API with optimized parameters...');
     const response = await openai.chat.completions.create({
-      model: 'gpt-4',
+      model: 'gpt-3.5-turbo-16k', // Use a faster model with larger context window
       messages: [
         { role: 'system', content: 'You are an expert at analyzing customer interviews and extracting insights.' },
         { role: 'user', content: prompt }
       ],
       temperature: 0.2,
-      max_tokens: 2000,
+      max_tokens: 1500, // Reduced to ensure faster response
     });
 
     // Parse the response
@@ -180,7 +191,20 @@ ${transcriptionText}
       console.log('Successfully parsed analysis data');
     } catch (e) {
       console.error('Error parsing OpenAI response as JSON:', e);
-      return NextResponse.json({ error: 'Failed to parse analysis results' }, { status: 500 });
+      
+      // Attempt to extract JSON from non-JSON response
+      try {
+        const jsonMatch = analysisText?.match(/\{[\s\S]*\}/);
+        if (jsonMatch && jsonMatch[0]) {
+          analysisData = JSON.parse(jsonMatch[0]);
+          console.log('Successfully extracted and parsed JSON from response');
+        } else {
+          throw new Error('Could not extract JSON from response');
+        }
+      } catch (extractError) {
+        console.error('Failed to extract JSON from response:', extractError);
+        return NextResponse.json({ error: 'Failed to parse analysis results' }, { status: 500 });
+      }
     }
 
     // Update transcription record with analysis data - use field names from the database
@@ -192,37 +216,25 @@ ${transcriptionText}
         analysis_status: 'completed',
         updated_at: new Date().toISOString()
       })
-      .eq('id', transcription.id);
+      .eq('id', cleanTranscriptionId);
 
     if (updateError) {
       console.error('Error updating transcription with analysis:', updateError);
       return NextResponse.json({ error: 'Failed to save analysis results' }, { status: 500 });
     }
 
-    // Verify the update was successful
-    console.log('Verifying analysis data was saved...');
-    const { data: verifiedData, error: verifyError } = await supabase
-      .from('transcriptions')
-      .select('id, analysis_status, analysis_data')
-      .eq('id', transcription.id)
-      .single();
-      
-    if (verifyError) {
-      console.error('Error verifying analysis data:', verifyError);
-    } else {
-      console.log('Verified analysis data:', verifiedData);
-    }
-
-    console.log('Analysis completed successfully');
+    console.log('Analysis completed and saved successfully');
     return NextResponse.json({ 
-      success: true, 
-      analysis: analysisData 
+      success: true,
+      analysis: analysisData
     });
 
   } catch (error: any) {
-    console.error('Error analyzing transcript:', error);
+    console.error('Unexpected error in analysis API:', error);
     return NextResponse.json({ 
-      error: `Failed to analyze transcript: ${error.message}` 
+      error: 'Analysis failed',
+      message: error.message || 'An unexpected error occurred',
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     }, { status: 500 });
   }
 }
