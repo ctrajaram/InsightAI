@@ -195,99 +195,40 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       console.log('Starting file upload to Supabase...');
       let fileInfo;
       
-      // Get authentication token with retry
-      let accessToken = await getAuthToken();
+      // Try to refresh the session first to ensure we have a valid token
+      await refreshSession();
       
-      // If no token, try refreshing the session once
-      if (!accessToken) {
-        console.log('No valid token, attempting to refresh session...');
-        const refreshed = await refreshSession();
-        if (refreshed) {
-          accessToken = await getAuthToken();
-        }
-      }
-      
-      if (!accessToken) {
-        setError('Authentication error: Please sign in again and try once more.');
-        clearInterval(progressInterval);
-        setIsUploading(false);
-        setIsSubmitting(false);
-        return;
-      }
-      
-      console.log('Got valid session token, proceeding with upload');
-      
-      // Step 1: Get a signed URL from our server
-      const getSignedUrlResponse = await fetch('/api/upload-file', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${accessToken}`
-        },
-        body: JSON.stringify({
-          filename: selectedFile.name,
-          contentType: selectedFile.type,
-          size: selectedFile.size
-        })
-      });
-      
-      // Clone the response for potential error handling
-      const signedUrlResponseClone = getSignedUrlResponse.clone();
-      
-      if (!getSignedUrlResponse.ok) {
-        let errorMessage;
-        try {
-          const errorData = await getSignedUrlResponse.json();
-          errorMessage = errorData.error || `HTTP error ${getSignedUrlResponse.status}`;
-          
-          // Handle specific errors
-          if (errorData.rlsError) {
-            setError('Permission error: Please contact support to verify storage configuration');
-            throw new Error('RLS configuration issue');
-          }
-          
-          if (errorData.bucketError) {
-            setError('Storage configuration error: Media storage bucket not found');
-            throw new Error('Bucket configuration issue');
-          }
-        } catch (jsonError) {
-          try {
-            errorMessage = await signedUrlResponseClone.text();
-          } catch (textError) {
-            errorMessage = `HTTP error ${getSignedUrlResponse.status}`;
-          }
-        }
+      // Use direct upload method from our library
+      try {
+        fileInfo = await uploadMediaFile(selectedFile, user.id);
+        console.log('File uploaded successfully:', fileInfo);
+      } catch (uploadError: any) {
+        console.error('Upload error:', uploadError);
         
-        throw new Error(errorMessage);
+        // Check for authentication errors
+        if (uploadError.message.includes('auth') || 
+            uploadError.message.includes('permission') || 
+            uploadError.message.includes('policy')) {
+          
+          // Try refreshing the session and uploading again
+          console.log('Authentication error detected, refreshing session...');
+          const refreshed = await refreshSession();
+          
+          if (refreshed) {
+            console.log('Session refreshed, retrying upload...');
+            fileInfo = await uploadMediaFile(selectedFile, user.id);
+          } else {
+            setError('Authentication error: Please sign in again and try once more.');
+            clearInterval(progressInterval);
+            setIsUploading(false);
+            setIsSubmitting(false);
+            return;
+          }
+        } else {
+          // Re-throw other errors
+          throw uploadError;
+        }
       }
-      
-      // Get the signed URL and file info
-      const signedUrlData = await getSignedUrlResponse.json();
-      console.log('Received signed URL for direct upload');
-      
-      // Step 2: Upload directly to Supabase Storage using the signed URL
-      const uploadResponse = await fetch(signedUrlData.signedUrl, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': selectedFile.type
-        },
-        body: selectedFile
-      });
-      
-      if (!uploadResponse.ok) {
-        throw new Error(`Direct upload failed with status: ${uploadResponse.status}`);
-      }
-      
-      console.log('File uploaded successfully via signed URL');
-      
-      // Use the file info returned from the signed URL request
-      fileInfo = {
-        path: signedUrlData.path,
-        url: signedUrlData.url,
-        filename: signedUrlData.filename,
-        contentType: signedUrlData.contentType,
-        size: signedUrlData.size
-      };
       
       console.log('File uploaded successfully, creating record...');
       

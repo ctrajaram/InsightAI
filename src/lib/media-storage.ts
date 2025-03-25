@@ -2,16 +2,15 @@ import { v4 as uuidv4 } from 'uuid';
 import { createSupabaseBrowserClient } from './supabase';
 
 // Define bucket name for media files
-const MEDIA_BUCKET = 'media-files';
+export const MEDIA_BUCKET = 'media-files';
 
-// Interface for the uploaded file info
+// Interface for uploaded file information
 export interface UploadedFileInfo {
   path: string;
   url: string;
   filename: string;
   contentType: string;
   size: number;
-  transcription?: any; 
 }
 
 // Interface for the transcription record
@@ -77,9 +76,7 @@ export function mapDbRecordToTranscriptionRecord(dbRecord: any): TranscriptionRe
   };
 }
 
-/**
- * Uploads a file to Supabase storage
- */
+// Uploads a file to Supabase storage
 export async function uploadMediaFile(file: File, userId: string): Promise<UploadedFileInfo> {
   const supabase = createSupabaseBrowserClient();
   
@@ -94,12 +91,27 @@ export async function uploadMediaFile(file: File, userId: string): Promise<Uploa
   try {
     console.log(`Attempting to upload file to ${MEDIA_BUCKET}/${storagePath}`);
     
+    // First check if the bucket exists
+    const { data: buckets, error: bucketsError } = await supabase.storage.listBuckets();
+    
+    if (bucketsError) {
+      console.error('Error listing buckets:', bucketsError);
+      throw new Error(`Failed to check storage buckets: ${bucketsError.message}`);
+    }
+    
+    const bucketExists = buckets?.some((bucket) => bucket.name === MEDIA_BUCKET);
+    
+    if (!bucketExists) {
+      console.error(`Bucket '${MEDIA_BUCKET}' does not exist`);
+      throw new Error(`Storage bucket '${MEDIA_BUCKET}' not found. Please create this bucket in your Supabase dashboard.`);
+    }
+    
     // Upload file to Supabase Storage
     const { data, error } = await supabase.storage
       .from(MEDIA_BUCKET)
       .upload(storagePath, file, {
         cacheControl: '3600',
-        upsert: false,
+        upsert: true, // Use upsert to avoid conflicts
       });
     
     if (error) {
@@ -135,6 +147,29 @@ export async function uploadMediaFile(file: File, userId: string): Promise<Uploa
   } catch (error: any) {
     console.error('Error in uploadMediaFile:', error);
     throw error; // Re-throw to preserve the specific error message
+  }
+}
+
+// Deletes a file from Supabase storage
+export async function deleteMediaFile(filePath: string): Promise<void> {
+  const supabase = createSupabaseBrowserClient();
+  
+  try {
+    console.log(`Attempting to delete file: ${MEDIA_BUCKET}/${filePath}`);
+    
+    const { error } = await supabase.storage
+      .from(MEDIA_BUCKET)
+      .remove([filePath]);
+    
+    if (error) {
+      console.error('Error deleting file from Supabase Storage:', error);
+      throw new Error(`Failed to delete file: ${error.message}`);
+    }
+    
+    console.log('File deleted successfully');
+  } catch (error: any) {
+    console.error('Error in deleteMediaFile:', error);
+    throw error;
   }
 }
 
@@ -254,107 +289,3 @@ export async function updateTranscriptionRecord(
   
   return mapDbRecordToTranscriptionRecord(data);
 }
-
-/**
- * Gets all transcription records for a user
- */
-export async function getUserTranscriptions(userId: string): Promise<TranscriptionRecord[]> {
-  const supabase = createSupabaseBrowserClient();
-  
-  const { data, error } = await supabase
-    .from('transcriptions')
-    .select('*')
-    .eq('user_id', userId)
-    .order('created_at', { ascending: false });
-  
-  if (error) {
-    console.error('Error fetching transcriptions:', error.message);
-    throw new Error(`Failed to fetch transcriptions: ${error.message}`);
-  }
-  
-  return (data || []).map(record => mapDbRecordToTranscriptionRecord(record));
-}
-
-/**
- * Marks a transcription record as failed
- */
-export async function markTranscriptionError(
-  transcriptionId: string,
-  errorMessage: string
-): Promise<void> {
-  const supabase = createSupabaseBrowserClient();
-  
-  const { error } = await supabase
-    .from('transcriptions')
-    .update({
-      status: 'error',
-      error: errorMessage,
-      updated_at: new Date().toISOString()
-    })
-    .eq('id', transcriptionId);
-  
-  if (error) {
-    console.error('Error updating transcription error status:', error.message);
-    throw new Error(`Failed to update transcription error status: ${error.message}`);
-  }
-}
-
-/**
- * Updates the transcription record with summary info
- */
-export async function updateTranscriptionWithSummary(
-  transcriptionId: string,
-  summaryText: string
-): Promise<TranscriptionRecord> {
-  const supabase = createSupabaseBrowserClient();
-  
-  const { data, error } = await supabase
-    .from('transcriptions')
-    .update({
-      summary_text: summaryText,
-      summary_status: 'completed',
-      updated_at: new Date().toISOString()
-    })
-    .eq('id', transcriptionId)
-    .select()
-    .single();
-  
-  if (error) {
-    console.error('Error updating summary in transcription record:', error.message);
-    throw new Error(`Failed to update summary in transcription record: ${error.message}`);
-  }
-  
-  return mapDbRecordToTranscriptionRecord(data);
-}
-
-/**
- * Requests an AI-generated summary for a transcription
- * 
- * @deprecated Use the direct API call from the component instead
- */
-export async function generateSummary(transcriptionId: string, transcriptionText: string): Promise<string> {
-  console.warn('This function is deprecated. Please use the direct API call from the component instead');
-  try {
-    const response = await fetch('/api/summarize', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        transcriptionId,
-        transcriptionText,
-      }),
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.error || 'Failed to generate summary');
-    }
-
-    const data = await response.json();
-    return data.summary.text;
-  } catch (error: any) {
-    console.error('Error generating summary:', error.message);
-    throw new Error(`Failed to generate summary: ${error.message}`);
-  }
-} 
