@@ -236,51 +236,81 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
         transcriptionId
       });
       
-      const finalizeResponse = await fetch('/api/finalize-upload', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`
-        },
-        body: JSON.stringify({
-          uploadId: fileId,
-          fileName,
-          fileType,
-          totalChunks,
-          uploadedChunks, // Include the list of chunks we know were uploaded
-          transcriptionId
-        }),
-      });
+      // Maximum retries for finalization
+      const maxFinalizeRetries = 3;
+      let finalizeAttempt = 0;
+      let finalizeSuccess = false;
+      let fileInfo;
+      let lastFinalizeError;
       
-      // Clone the response before reading it
-      const finalizeResponseClone = finalizeResponse.clone();
-      
-      if (!finalizeResponse.ok) {
-        let errorMessage;
+      while (finalizeAttempt < maxFinalizeRetries && !finalizeSuccess) {
+        finalizeAttempt++;
+        
         try {
-          const errorData = await finalizeResponse.json();
-          errorMessage = errorData.error || 'Failed to finalize upload';
-        } catch (jsonError) {
-          // If JSON parsing fails, try to get text
-          try {
-            errorMessage = await finalizeResponseClone.text();
-          } catch (textError) {
-            console.error('Failed to read response body as text:', textError);
-            errorMessage = 'Failed to finalize upload';
+          const finalizeResponse = await fetch('/api/finalize-upload', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${session.access_token}`
+            },
+            body: JSON.stringify({
+              uploadId: fileId,
+              fileName,
+              fileType,
+              totalChunks,
+              uploadedChunks, // Include the list of chunks we know were uploaded
+              transcriptionId
+            }),
+          });
+          
+          // Clone the response before reading it
+          const finalizeResponseClone = finalizeResponse.clone();
+          
+          if (!finalizeResponse.ok) {
+            let errorMessage;
+            try {
+              const errorData = await finalizeResponse.json();
+              errorMessage = errorData.error || 'Failed to finalize upload';
+            } catch (jsonError) {
+              // If JSON parsing fails, try to get text
+              try {
+                errorMessage = await finalizeResponseClone.text();
+              } catch (textError) {
+                console.error('Failed to read response body as text:', textError);
+                errorMessage = 'Failed to finalize upload';
+              }
+            }
+            throw new Error(`Finalize upload failed: ${errorMessage}`);
+          }
+          
+          // Get the finalized file info
+          fileInfo = await finalizeResponse.json();
+          finalizeSuccess = true;
+          
+        } catch (error: any) {
+          console.error(`Finalize attempt ${finalizeAttempt} failed:`, error);
+          lastFinalizeError = error.message;
+          
+          // Wait before retrying
+          if (finalizeAttempt < maxFinalizeRetries) {
+            setUploadMessage(`Retrying finalization (attempt ${finalizeAttempt + 1}/${maxFinalizeRetries})...`);
+            await new Promise(resolve => setTimeout(resolve, 2000));
           }
         }
-        throw new Error(`Finalize upload failed: ${errorMessage}`);
       }
       
-      // Get the finalized file info
-      const fileInfo = await finalizeResponse.json();
+      if (!finalizeSuccess) {
+        throw new Error(`Failed to finalize upload after ${maxFinalizeRetries} attempts. Last error: ${lastFinalizeError}`);
+      }
+      
       setUploadProgress(100);
       setUploadMessage('Upload complete!');
       
       // Return the file info in the expected format
       return {
-        path: fileInfo.path,
-        url: fileInfo.url,
+        path: fileInfo.filePath || fileInfo.path,
+        url: fileInfo.fileUrl || fileInfo.url,
+        transcription: fileInfo.transcription,
         filename: fileName,
         contentType: fileType,
         size: fileSize
@@ -1863,7 +1893,7 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
           {transcriptionRecord && renderStatusBanner()}
           
           {/* File upload section with modern design */}
-          <div className="mb-8 rounded-xl bg-white border border-gray-200 shadow-sm overflow-hidden">
+          <div className="mb-8 rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
             <div className="p-6 sm:p-8 bg-gradient-to-r from-indigo-50 to-purple-50 border-b border-gray-200">
               <h2 className="text-xl font-semibold mb-2 text-gray-800">Upload Interview</h2>
               <p className="text-gray-600">Upload audio or video files to transcribe and analyze customer interviews</p>

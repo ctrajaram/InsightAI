@@ -11,6 +11,7 @@ export interface UploadedFileInfo {
   filename: string;
   contentType: string;
   size: number;
+  transcription?: any; 
 }
 
 // Interface for the transcription record
