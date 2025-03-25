@@ -93,6 +93,9 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
     const chunkSize = 1 * 1024 * 1024; // 1MB chunks
     const totalChunks = Math.ceil(fileSize / chunkSize);
     
+    // Create a unique transcription ID for this upload
+    const transcriptionId = uuidv4();
+    
     try {
       // Get the current session to retrieve the access token
       const { data: { session } } = await supabase.auth.getSession();
@@ -109,13 +112,14 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
         
         // Create FormData for the chunk
         const formData = new FormData();
-        formData.append('chunk', chunk);
+        formData.append('file', chunk);
         formData.append('chunkIndex', chunkIndex.toString());
         formData.append('totalChunks', totalChunks.toString());
-        formData.append('fileId', fileId);
+        formData.append('uploadId', fileId);
         formData.append('fileName', fileName);
         formData.append('fileType', fileType);
-        formData.append('userId', userId);
+        formData.append('fileSize', fileSize.toString());
+        formData.append('transcriptionId', transcriptionId); // Use the same transcriptionId for all chunks
         
         // Update progress
         const progress = Math.round(((chunkIndex + 1) / totalChunks) * 90); // Save 10% for finalization
@@ -171,11 +175,12 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
           'Authorization': `Bearer ${session.access_token}`
         },
         body: JSON.stringify({
-          fileId,
+          uploadId: fileId,
           fileName,
           fileType,
           totalChunks,
           userId,
+          transcriptionId
         }),
       });
       

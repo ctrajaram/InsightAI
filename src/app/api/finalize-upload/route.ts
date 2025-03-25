@@ -62,12 +62,12 @@ export async function POST(request: NextRequest) {
     
     // Parse the request body
     const body = await request.json();
-    const { uploadId, transcriptionId, fileName, fileType, totalChunks } = body;
-
+    const { uploadId, fileName, fileType, totalChunks, transcriptionId } = body;
+    
     // Validate required fields
-    if (!uploadId || !transcriptionId || !fileName || !fileType || !totalChunks) {
+    if (!uploadId || !fileName || !totalChunks) {
       return NextResponse.json(
-        { success: false, error: 'Missing required fields' },
+        { success: false, error: 'Missing required fields for finalization' },
         { status: 400 }
       );
     }
