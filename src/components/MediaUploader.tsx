@@ -61,12 +61,17 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadMessage, setUploadMessage] = useState('');
   const [isTranscribing, setIsTranscribing] = useState(false);
+  const [transcriptionProgress, setTranscriptionProgress] = useState(0);
+  const [transcriptionText, setTranscriptionText] = useState<string | null>(null);
+  const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [transcriptionRecord, setTranscriptionRecord] = useState<TranscriptionRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [transcriptionStatus, setTranscriptionStatus] = useState<'pending' | 'processing' | 'completed' | 'error'>('pending');
-  const [analysisStatus, setAnalysisStatus] = useState<'pending' | 'processing' | 'completed' | 'error'>('pending');
+  const [analysisStatus, setAnalysisStatus] = useState<'idle' | 'processing' | 'completed' | 'error'>('idle');
+  const [analysisData, setAnalysisData] = useState<any>(null);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [currentTranscriptionId, setCurrentTranscriptionId] = useState<string | null>(null);
   const [updateMessage, setUpdateMessage] = useState('');
@@ -1672,6 +1677,189 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       return false;
     } finally {
       setLoadingState('idle');
+    }
+  };
+
+  const processUploadedFile = async () => {
+    if (!selectedFile || !user || !transcriptionRecord) return;
+    
+    try {
+      setIsTranscribing(true);
+      setTranscriptionProgress(0);
+      setTranscriptionError(null);
+      
+      // Simulate progress updates
+      const progressInterval = setInterval(() => {
+        setTranscriptionProgress(prev => {
+          if (prev >= 95) {
+            clearInterval(progressInterval);
+            return 95;
+          }
+          return prev + 5;
+        });
+      }, 1000);
+      
+      console.log('Starting transcription for file:', transcriptionRecord.fileName);
+      
+      // Send the file to the transcription API
+      const formData = new FormData();
+      formData.append('file', selectedFile);
+      formData.append('transcriptionId', transcriptionRecord.id);
+      formData.append('fileName', selectedFile.name);
+      
+      const response = await fetch('/api/transcribe', {
+        method: 'POST',
+        body: formData,
+      });
+      
+      // Clone the response for potential error handling
+      const responseClone = response.clone();
+      
+      if (!response.ok) {
+        let errorMessage;
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.error || `HTTP error ${response.status}`;
+        } catch (jsonError) {
+          try {
+            errorMessage = await responseClone.text();
+          } catch (textError) {
+            errorMessage = `HTTP error ${response.status}`;
+          }
+        }
+        
+        throw new Error(errorMessage);
+      }
+      
+      const data = await response.json();
+      console.log('Transcription completed:', data);
+      
+      // Update UI with transcription result
+      setTranscriptionText(data.text);
+      setTranscriptionStatus('completed');
+      setTranscriptionProgress(100);
+      clearInterval(progressInterval);
+      
+      // Analyze the transcription
+      console.log('Starting analysis for transcription:', transcriptionRecord.id);
+      
+      // Use the new retry-enabled analysis function
+      await analyzeTranscription(transcriptionRecord.id, data.text);
+      
+    } catch (error: any) {
+      console.error('Transcription error:', error);
+      setTranscriptionError(`Transcription failed: ${error.message}`);
+      setTranscriptionStatus('error');
+    } finally {
+      setIsTranscribing(false);
+    }
+  };
+
+  // Function to handle analysis with timeout handling and retries
+  const analyzeTranscription = async (transcriptionId: string, text: string) => {
+    console.log(`Starting analysis for transcription ${transcriptionId}`);
+    setAnalysisStatus('processing');
+    setIsAnalyzing(true);
+    
+    try {
+      // Maximum number of retries
+      const MAX_RETRIES = 3;
+      // Timeout for the analysis request (in milliseconds)
+      const ANALYSIS_TIMEOUT = 45000; // 45 seconds
+      // Maximum text length to analyze
+      const MAX_TEXT_LENGTH = 15000;
+      
+      let retryCount = 0;
+      let success = false;
+      let textToAnalyze = text;
+      
+      // If text is too long, truncate it
+      if (text.length > MAX_TEXT_LENGTH) {
+        console.log(`Transcription text too long (${text.length} chars), truncating to ${MAX_TEXT_LENGTH} chars`);
+        textToAnalyze = text.substring(0, MAX_TEXT_LENGTH);
+      }
+      
+      while (retryCount < MAX_RETRIES && !success) {
+        try {
+          // Create an AbortController to handle timeouts
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), ANALYSIS_TIMEOUT);
+          
+          console.log(`Analysis attempt ${retryCount + 1} for transcription ${transcriptionId}`);
+          
+          // If we've had to retry, make the text even shorter
+          if (retryCount > 0 && textToAnalyze.length > MAX_TEXT_LENGTH / (retryCount + 1)) {
+            const newLength = Math.floor(MAX_TEXT_LENGTH / (retryCount + 1));
+            console.log(`Retry ${retryCount}: Reducing text length to ${newLength} chars`);
+            textToAnalyze = text.substring(0, newLength);
+          }
+          
+          const response = await fetch('/api/analyze', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              transcriptionId,
+              transcriptionText: textToAnalyze,
+            }),
+            signal: controller.signal,
+          });
+          
+          // Clear the timeout since the request completed
+          clearTimeout(timeoutId);
+          
+          // Clone the response for potential error handling
+          const responseClone = response.clone();
+          
+          if (!response.ok) {
+            let errorMessage;
+            try {
+              const errorData = await response.json();
+              errorMessage = errorData.error || `HTTP error ${response.status}`;
+            } catch (jsonError) {
+              try {
+                errorMessage = await responseClone.text();
+              } catch (textError) {
+                errorMessage = `HTTP error ${response.status}`;
+              }
+            }
+            
+            throw new Error(errorMessage);
+          }
+          
+          const data = await response.json();
+          console.log('Analysis completed successfully:', data);
+          
+          // Update the analysis data
+          setAnalysisData(data.analysis);
+          setAnalysisStatus('completed');
+          success = true;
+          
+        } catch (error: any) {
+          retryCount++;
+          console.error(`Analysis attempt ${retryCount} failed:`, error);
+          
+          // Check if this was a timeout
+          if (error.name === 'AbortError' || error.message.includes('timeout') || error.message.includes('FUNCTION_INVOCATION_TIMEOUT')) {
+            console.log('Analysis timed out, will retry with a shorter text segment');
+          }
+          
+          // If we've exhausted all retries, mark as failed
+          if (retryCount >= MAX_RETRIES) {
+            console.error('All analysis attempts failed');
+            setAnalysisStatus('error');
+            setAnalysisError(`Analysis failed: ${error.message}`);
+          } else {
+            // Wait before retrying
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
+        }
+      }
+      
+      return success;
+    } finally {
+      setIsAnalyzing(false);
     }
   };
 
