@@ -1,5 +1,5 @@
-import { NextRequest } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { NextRequest } from 'next/server';
 
 // Force no caching to prevent stale responses
 export const fetchCache = 'force-no-store';
@@ -12,18 +12,39 @@ export const config = {
   },
 };
 
-// Create the client only if both URL and key are available
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
-const supabase = supabaseUrl && supabaseKey 
-  ? createClient(supabaseUrl, supabaseKey)
-  : createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL || '', 
-      process.env.SUPABASE_SERVICE_KEY || ''
-    );
+// Create a Supabase client with proper error handling
+let supabase: ReturnType<typeof createClient> | null = null;
+try {
+  // Use empty strings as fallbacks to prevent build errors
+  supabase = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL || '',
+    process.env.SUPABASE_SERVICE_KEY || ''
+  );
+  
+  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) {
+    console.warn('Missing Supabase environment variables. API functionality may be limited.');
+  }
+} catch (error) {
+  console.error('Failed to initialize Supabase client:', error);
+}
 
 export async function POST(req: NextRequest) {
   try {
+    // Check if Supabase client was initialized properly
+    if (!supabase) {
+      console.error('Supabase client not initialized due to missing environment variables');
+      return new Response(
+        JSON.stringify({ 
+          success: false, 
+          error: 'Server configuration error: Database client not initialized' 
+        }),
+        { 
+          status: 500, 
+          headers: { 'Content-Type': 'application/json' } 
+        }
+      );
+    }
+    
     // Get the access token from the Authorization header
     const authHeader = req.headers.get('authorization');
     const accessToken = authHeader ? authHeader.split(' ')[1] : null;
@@ -33,7 +54,7 @@ export async function POST(req: NextRequest) {
       console.error('No access token provided');
       return new Response(
         JSON.stringify({ 
-          success: false,
+          success: false, 
           error: 'Authentication required. Please sign in and try again.' 
         }), 
         { 

@@ -7,18 +7,46 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+// Force no caching to prevent stale responses
+export const fetchCache = 'force-no-store';
+
 // Set a longer timeout for this route (5 minutes)
 export const maxDuration = 300; // 5 minutes in seconds (maximum allowed on Vercel Pro plan)
 
-// Set a larger body size limit
+// Set a larger body size limit and enable external resolver
 export const config = {
   api: {
     bodyParser: {
       sizeLimit: '10mb',
     },
     responseLimit: false,
+    externalResolver: true,
   },
 };
+
+// Create Supabase clients with proper error handling
+let supabase: ReturnType<typeof createClient> | null = null;
+let supabaseAdmin: ReturnType<typeof createClient> | null = null;
+
+try {
+  // Use empty strings as fallbacks to prevent build errors
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+  
+  // Initialize the regular client
+  supabase = createClient(supabaseUrl, supabaseAnonKey);
+  
+  // Initialize the admin client with service role
+  supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
+  
+  // Log warning if environment variables are missing
+  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    console.warn('Missing Supabase environment variables. API functionality may be limited.');
+  }
+} catch (error) {
+  console.error('Failed to initialize Supabase clients:', error);
+}
 
 // Maximum text length to analyze
 const MAX_TEXT_LENGTH = 15000;
@@ -27,6 +55,21 @@ export async function POST(req: Request) {
   console.log('Analysis API: Starting POST handler');
   
   try {
+    // Check if Supabase clients were initialized properly
+    if (!supabase || !supabaseAdmin) {
+      console.error('Supabase clients not initialized due to missing environment variables');
+      return new Response(
+        JSON.stringify({ 
+          success: false, 
+          error: 'Server configuration error: Database clients not initialized' 
+        }),
+        { 
+          status: 500, 
+          headers: { 'Content-Type': 'application/json' } 
+        }
+      );
+    }
+    
     // Log request headers to help debug
     const headers = Object.fromEntries(req.headers.entries());
     console.log('Request headers:', JSON.stringify(headers, null, 2));
@@ -37,10 +80,16 @@ export async function POST(req: Request) {
     
     if (!contentLength || parseInt(contentLength) === 0) {
       console.error('Empty request body received (content-length is 0 or missing)');
-      return NextResponse.json({
-        success: false,
-        error: 'Empty request body',
-      }, { status: 400 });
+      return new Response(
+        JSON.stringify({ 
+          success: false, 
+          error: 'Empty request body' 
+        }),
+        { 
+          status: 400, 
+          headers: { 'Content-Type': 'application/json' } 
+        }
+      );
     }
     
     // Parse the request body
@@ -59,11 +108,17 @@ export async function POST(req: Request) {
         // If the body is empty, return an error
         if (!bodyText || !bodyText.trim()) {
           console.error('Empty request body text despite non-zero content-length');
-          return NextResponse.json({
-            success: false,
-            error: 'Empty request body',
-            details: 'Request body was empty despite content-length header indicating content'
-          }, { status: 400 });
+          return new Response(
+            JSON.stringify({ 
+              success: false, 
+              error: 'Empty request body',
+              details: 'Request body was empty despite content-length header indicating content'
+            }),
+            { 
+              status: 400, 
+              headers: { 'Content-Type': 'application/json' } 
+            }
+          );
         }
         
         // Parse the text as JSON
@@ -72,11 +127,17 @@ export async function POST(req: Request) {
           console.log('Successfully parsed request body:', JSON.stringify(body, null, 2));
         } catch (jsonError) {
           console.error('Failed to parse request body as JSON:', jsonError, 'Raw body:', bodyText);
-          return NextResponse.json({
-            success: false,
-            error: 'Invalid JSON in request body',
-            details: jsonError instanceof Error ? jsonError.message : 'Unknown parsing error'
-          }, { status: 400 });
+          return new Response(
+            JSON.stringify({ 
+              success: false, 
+              error: 'Invalid JSON in request body',
+              details: jsonError instanceof Error ? jsonError.message : 'Unknown parsing error'
+            }),
+            { 
+              status: 400, 
+              headers: { 'Content-Type': 'application/json' } 
+            }
+          );
         }
       } catch (textError) {
         console.error('Failed to read request as text:', textError);
@@ -88,79 +149,95 @@ export async function POST(req: Request) {
           console.log('Successfully parsed request body using json() method:', JSON.stringify(body, null, 2));
         } catch (jsonError) {
           console.error('Failed to parse request body as JSON after text failure:', jsonError);
-          return NextResponse.json({
-            success: false,
-            error: 'Invalid or empty request body',
-            details: jsonError instanceof Error ? jsonError.message : 'Unknown parsing error'
-          }, { status: 400 });
+          return new Response(
+            JSON.stringify({ 
+              success: false, 
+              error: 'Invalid or empty request body',
+              details: jsonError instanceof Error ? jsonError.message : 'Unknown parsing error'
+            }),
+            { 
+              status: 400, 
+              headers: { 'Content-Type': 'application/json' } 
+            }
+          );
         }
       }
     } catch (error) {
       console.error('Unexpected error processing request body:', error);
-      return NextResponse.json({
-        success: false,
-        error: 'Failed to process request body',
-        details: error instanceof Error ? error.message : 'Unknown error'
-      }, { status: 400 });
+      return new Response(
+        JSON.stringify({ 
+          success: false, 
+          error: 'Failed to process request body',
+          details: error instanceof Error ? error.message : 'Unknown error'
+        }),
+        { 
+          status: 400, 
+          headers: { 'Content-Type': 'application/json' } 
+        }
+      );
     }
     
     const { transcriptionId, accessToken } = body || {};
     
     // Validate required parameters
     if (!transcriptionId) {
-      return NextResponse.json({ 
-        success: false, 
-        error: 'Missing required parameter: transcriptionId' 
-      }, { status: 400 });
+      return new Response(
+        JSON.stringify({ 
+          success: false, 
+          error: 'Missing required parameter: transcriptionId' 
+        }),
+        { 
+          status: 400, 
+          headers: { 'Content-Type': 'application/json' } 
+        }
+      );
     }
     
     // Set up Supabase clients
-    let supabase;
-    let supabaseAdmin;
+    let supabaseClient = supabase;
+    let supabaseAdminClient = supabaseAdmin;
     
     try {
-      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-      const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-      const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-      if (!supabaseUrl || !supabaseKey) {
-        console.warn('Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY environment variable. Using fallback values.');
-      }
-
       // Initialize Supabase client with user token if provided
       if (accessToken) {
         console.log('Analysis API: Using user token for authentication');
-        supabase = createClient(
-          supabaseUrl || '',
-          supabaseKey || '',
+        supabaseClient = createClient(
+          process.env.NEXT_PUBLIC_SUPABASE_URL || '',
+          accessToken,
           {
             global: { headers: { Authorization: `Bearer ${accessToken}` } },
           }
         );
       } else {
         console.log('Analysis API: Using anon key for regular client');
-        supabase = createClient(
-          supabaseUrl || '',
-          supabaseKey || ''
+        supabaseClient = createClient(
+          process.env.NEXT_PUBLIC_SUPABASE_URL || '',
+          process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
         );
       }
       
       // Always initialize admin client with service role for database operations
       console.log('Analysis API: Using service role key for admin client');
-      supabaseAdmin = createClient(
-        supabaseUrl || '',
-        supabaseServiceKey || ''
+      supabaseAdminClient = createClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL || '',
+        process.env.SUPABASE_SERVICE_ROLE_KEY || ''
       );
     } catch (error) {
       console.error('Error initializing Supabase clients:', error);
-      return NextResponse.json({ 
-        success: false, 
-        error: 'Failed to initialize database connection' 
-      }, { status: 500 });
+      return new Response(
+        JSON.stringify({ 
+          success: false, 
+          error: 'Failed to initialize database connection' 
+        }),
+        { 
+          status: 500, 
+          headers: { 'Content-Type': 'application/json' } 
+        }
+      );
     }
     
     // Check if the transcription exists and get the current status
-    const { data: transcription, error: fetchError } = await supabaseAdmin
+    const { data: transcription, error: fetchError } = await supabaseAdminClient
       .from('transcriptions')
       .select('id, user_id, transcription_text, analysis_status, analysis_data, status, summary_status, summary_text')
       .eq('id', transcriptionId)
@@ -168,11 +245,17 @@ export async function POST(req: Request) {
     
     if (fetchError) {
       console.error('Error fetching transcription:', fetchError);
-      return NextResponse.json({ 
-        success: false, 
-        error: 'Transcription not found',
-        details: fetchError.message 
-      }, { status: 404 });
+      return new Response(
+        JSON.stringify({ 
+          success: false, 
+          error: 'Transcription not found',
+          details: fetchError.message 
+        }),
+        { 
+          status: 404, 
+          headers: { 'Content-Type': 'application/json' } 
+        }
+      );
     }
     
     // Check if there's a summary to use for the analysis
@@ -183,32 +266,44 @@ export async function POST(req: Request) {
     }
     
     // Check if transcription is complete
-    if (transcription.status !== 'completed') {
-      console.log(`Transcription ${transcriptionId} is not complete (status: ${transcription.status}), cannot analyze`);
+    if (transcription.status === 'processing') {
+      console.log(`Transcription ${transcriptionId} is still processing, cannot analyze yet`);
       
       // Return a more informative error response with a 202 Accepted status instead of 400 Bad Request
       // This indicates the request was valid but is still being processed
-      return NextResponse.json({
-        success: false,
-        error: 'Transcription is still processing',
-        status: transcription.status,
-        retryAfter: 10, // Suggest client retry after 10 seconds
-        isPartial: true
-      }, { status: 202 }); // 202 Accepted is more appropriate than 400 Bad Request
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: 'Transcription is still processing',
+          status: transcription.status as string,
+          retryAfter: 10, // Suggest client retry after 10 seconds
+          isPartial: true
+        }),
+        { 
+          status: 202, 
+          headers: { 'Content-Type': 'application/json' } 
+        }
+      ); // 202 Accepted is more appropriate than 400 Bad Request
     }
     
     // If there's no transcription text, we can't analyze it
-    if (!transcription.transcription_text || transcription.transcription_text.trim().length === 0) {
+    if (!transcription.transcription_text || typeof transcription.transcription_text !== 'string' || transcription.transcription_text.trim() === '') {
       console.log(`Transcription ${transcriptionId} has no text, cannot analyze`);
-      return NextResponse.json({ 
-        success: false, 
-        error: 'Transcription has no text',
-        details: 'Transcription text is empty or missing'
-      }, { status: 400 });
+      return new Response(
+        JSON.stringify({ 
+          success: false, 
+          error: 'Transcription has no text',
+          details: 'Transcription text is empty or missing'
+        }),
+        { 
+          status: 400, 
+          headers: { 'Content-Type': 'application/json' } 
+        }
+      );
     }
     
     // Update the analysis status to processing
-    const { error: updateError } = await supabaseAdmin
+    const { error: updateError } = await supabaseAdminClient
       .from('transcriptions')
       .update({
         analysis_status: 'processing',
@@ -218,15 +313,21 @@ export async function POST(req: Request) {
     
     if (updateError) {
       console.error('Error updating analysis status:', updateError);
-      return NextResponse.json({ 
-        success: false, 
-        error: 'Failed to update analysis status',
-        details: updateError.message 
-      }, { status: 500 });
+      return new Response(
+        JSON.stringify({ 
+          success: false, 
+          error: 'Failed to update analysis status',
+          details: updateError.message 
+        }),
+        { 
+          status: 500, 
+          headers: { 'Content-Type': 'application/json' } 
+        }
+      );
     }
     
     // If transcription text is provided directly, use it
-    let finalTranscriptionText = '';
+    let finalTranscriptionText: string = '';
     
     if (transcription.transcription_text && typeof transcription.transcription_text === 'string') {
       console.log('Using provided transcription text');
@@ -234,7 +335,7 @@ export async function POST(req: Request) {
     } else {
       // Otherwise, fetch from database
       console.log('Querying for transcription with ID:', transcriptionId);
-      const { data: transcription, error: directError } = await supabase
+      const { data: transcription, error: directError } = await supabaseClient
         .from('transcriptions')
         .select('*')
         .eq('id', transcriptionId)
@@ -242,18 +343,30 @@ export async function POST(req: Request) {
         
       if (directError) {
         console.error('Error fetching transcription:', directError);
-        return NextResponse.json({ 
-          error: 'Transcription not found',
-          details: directError.message || 'No matching record found with ID: ' + transcriptionId
-        }, { status: 404 });
+        return new Response(
+          JSON.stringify({ 
+            error: 'Transcription not found',
+            details: directError.message || 'No matching record found with ID: ' + transcriptionId
+          }),
+          { 
+            status: 404, 
+            headers: { 'Content-Type': 'application/json' } 
+          }
+        );
       }
 
       if (!transcription) {
         console.error('No transcription found with ID:', transcriptionId);
-        return NextResponse.json({ 
-          error: 'Transcription not found',
-          details: 'No matching record found with ID: ' + transcriptionId
-        }, { status: 404 });
+        return new Response(
+          JSON.stringify({ 
+            error: 'Transcription not found',
+            details: 'No matching record found with ID: ' + transcriptionId
+          }),
+          { 
+            status: 404, 
+            headers: { 'Content-Type': 'application/json' } 
+          }
+        );
       }
 
       console.log('Found transcription record:', transcription);
@@ -262,7 +375,15 @@ export async function POST(req: Request) {
       finalTranscriptionText = transcription.transcription_text;
       if (!finalTranscriptionText) {
         console.error('Transcription text is empty in record:', transcription);
-        return NextResponse.json({ error: 'Transcription text is empty' }, { status: 400 });
+        return new Response(
+          JSON.stringify({ 
+            error: 'Transcription text is empty'
+          }),
+          { 
+            status: 400, 
+            headers: { 'Content-Type': 'application/json' } 
+          }
+        );
       }
     }
 
@@ -285,11 +406,17 @@ export async function POST(req: Request) {
     }
 
     // Verify we have text to analyze
-    if (!textToAnalyze || textToAnalyze.trim().length === 0) {
-      return NextResponse.json({
-        success: false,
-        error: 'No transcription text provided for analysis'
-      }, { status: 400 });
+    if (!textToAnalyze || typeof textToAnalyze !== 'string' || textToAnalyze.trim().length === 0) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: 'No transcription text provided for analysis'
+        }),
+        { 
+          status: 400, 
+          headers: { 'Content-Type': 'application/json' } 
+        }
+      );
     }
 
     // Skip analysis if the text appears to be a processing message
@@ -310,20 +437,26 @@ export async function POST(req: Request) {
       console.log('Detected processing message, returning placeholder analysis');
       
       // Return a placeholder analysis response
-      return NextResponse.json({
-        success: true,
-        analysis: {
-          topics: ["Processing"],
-          keyInsights: ["Waiting for complete transcription"],
-          actionItems: [],
-          sentiment: "neutral",
-          toneAnalysis: "This appears to be a processing message, not actual content",
-          questions: [],
-          pain_points: [],
-          feature_requests: [],
-          sentiment_explanation: "This is a system message, not actual conversation content"
+      return new Response(
+        JSON.stringify({
+          success: true,
+          analysis: {
+            topics: ["Processing"],
+            keyInsights: ["Waiting for complete transcription"],
+            actionItems: [],
+            sentiment: "neutral",
+            toneAnalysis: "This appears to be a processing message, not actual content",
+            questions: [],
+            pain_points: [],
+            feature_requests: [],
+            sentiment_explanation: "This is a system message, not actual conversation content"
+          }
+        }),
+        { 
+          status: 200, 
+          headers: { 'Content-Type': 'application/json' } 
         }
-      });
+      );
     }
 
     // Prepare the prompt for OpenAI
@@ -464,7 +597,7 @@ export async function POST(req: Request) {
 
       // Update transcription record with analysis data - use field names from the database
       console.log('Updating transcription record with analysis data...');
-      const { error: updateError } = await supabaseAdmin
+      const { error: updateError } = await supabaseAdminClient
         .from('transcriptions')
         .update({
           analysis_data: analysisData,
@@ -475,15 +608,21 @@ export async function POST(req: Request) {
 
       if (updateError) {
         console.error('Error updating transcription with analysis:', updateError);
-        return NextResponse.json({ 
-          success: false, 
-          error: 'Failed to save analysis results',
-          details: updateError.message 
-        }, { status: 500 });
+        return new Response(
+          JSON.stringify({ 
+            success: false, 
+            error: 'Failed to save analysis results',
+            details: updateError.message 
+          }),
+          { 
+            status: 500, 
+            headers: { 'Content-Type': 'application/json' } 
+          }
+        );
       }
 
       // Double-check that the record was updated correctly
-      const { data: updatedRecord, error: checkError } = await supabase
+      const { data: updatedRecord, error: checkError } = await supabaseClient
         .from('transcriptions')
         .select('id, analysis_status, analysis_data')
         .eq('id', transcriptionId)
@@ -497,25 +636,43 @@ export async function POST(req: Request) {
       }
 
       console.log('Analysis completed and saved successfully');
-      return NextResponse.json({ 
-        success: true,
-        analysis: analysisData
-      });
+      return new Response(
+        JSON.stringify({ 
+          success: true,
+          analysis: analysisData
+        }),
+        { 
+          status: 200, 
+          headers: { 'Content-Type': 'application/json' } 
+        }
+      );
 
     } catch (error: any) {
       console.error('Unexpected error in analysis API:', error);
-      return NextResponse.json({ 
-        error: 'Analysis failed',
-        message: error.message || 'An unexpected error occurred',
-        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-      }, { status: 500 });
+      return new Response(
+        JSON.stringify({ 
+          error: 'Analysis failed',
+          message: error.message || 'An unexpected error occurred',
+          stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        }),
+        { 
+          status: 500, 
+          headers: { 'Content-Type': 'application/json' } 
+        }
+      );
     }
   } catch (error: any) {
     console.error('Unexpected error in analysis API:', error);
-    return NextResponse.json({ 
-      error: 'Analysis failed',
-      message: error.message || 'An unexpected error occurred',
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    }, { status: 500 });
+    return new Response(
+      JSON.stringify({ 
+        error: 'Analysis failed',
+        message: error.message || 'An unexpected error occurred',
+        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      }),
+      { 
+        status: 500, 
+        headers: { 'Content-Type': 'application/json' } 
+      }
+    );
   }
 }
