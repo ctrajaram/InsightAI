@@ -111,7 +111,7 @@ export default function AITestPage() {
             
             <Card className="colorful-card bg-gradient-to-br from-blue-50 to-cyan-50">
               <CardHeader>
-                <CardTitle className="text-cyan-700">Whisper</CardTitle>
+                <CardTitle className="text-cyan-700">Rev.ai</CardTitle>
               </CardHeader>
               <CardContent>
                 <p>High-quality audio transcription for your media files</p>
