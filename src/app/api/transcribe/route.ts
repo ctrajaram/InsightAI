@@ -1,8 +1,7 @@
-export const fetchCache = "force-no-store";
-
 import { createClient } from '@supabase/supabase-js';
 import { NextRequest, NextResponse } from 'next/server';
 import OpenAI from 'openai';
+import fetch from 'node-fetch';
 
 // Create a standard Supabase client without relying on cookies
 const supabase = createClient(
@@ -73,6 +72,13 @@ async function retryWithExponentialBackoff<T>(
   }
 }
 
+// Rev.ai API configuration
+const REV_AI_API_KEY = process.env.REV_AI_API_KEY;
+const REV_AI_BASE_URL = 'https://api.rev.ai/speechtotext/v1';
+
+// Whisper file size limit (25MB)
+const WHISPER_FILE_SIZE_LIMIT = 25 * 1024 * 1024;
+
 // Increase timeout for transcription to 8 minutes (480000 ms) instead of 5 minutes
 const TRANSCRIPTION_TIMEOUT = 480000; // 8 minutes
 
@@ -82,9 +88,145 @@ const MAX_DIRECT_TRANSCRIPTION_SIZE = 10 * 1024 * 1024;
 // Maximum file size allowed (400MB)
 const MAX_FILE_SIZE = 400 * 1024 * 1024;
 
+// Function to submit a transcription job to Rev.ai
+async function submitRevAiJob(mediaUrl: string) {
+  console.log('Submitting job to Rev.ai API');
+  
+  try {
+    const response = await fetch(`${REV_AI_BASE_URL}/jobs`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${REV_AI_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        source_config: {
+          media_url: mediaUrl
+        },
+        metadata: 'InsightAI Transcription'
+      })
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Rev.ai API error: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+    
+    const job = await response.json();
+    console.log('Rev.ai job submitted successfully:', job.id);
+    return job;
+  } catch (error) {
+    console.error('Error submitting Rev.ai job:', error);
+    throw error;
+  }
+}
+
+// Function to get the status of a Rev.ai job
+async function getRevAiJobStatus(jobId: string) {
+  console.log(`Checking status of Rev.ai job: ${jobId}`);
+  
+  try {
+    const response = await fetch(`${REV_AI_BASE_URL}/jobs/${jobId}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${REV_AI_API_KEY}`
+      }
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Rev.ai API error: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+    
+    const jobStatus = await response.json();
+    console.log(`Rev.ai job status: ${jobStatus.status}`);
+    return jobStatus;
+  } catch (error) {
+    console.error('Error getting Rev.ai job status:', error);
+    throw error;
+  }
+}
+
+// Function to get the transcript from a completed Rev.ai job
+async function getRevAiTranscript(jobId: string) {
+  console.log(`Getting transcript for Rev.ai job: ${jobId}`);
+  
+  try {
+    const response = await fetch(`${REV_AI_BASE_URL}/jobs/${jobId}/transcript`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${REV_AI_API_KEY}`,
+        'Accept': 'application/vnd.rev.transcript.v1.0+json'
+      }
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Rev.ai API error: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+    
+    const transcript = await response.json();
+    
+    // Convert Rev.ai transcript format to plain text
+    let plainText = '';
+    if (transcript.monologues) {
+      transcript.monologues.forEach((monologue: any) => {
+        if (monologue.speaker && plainText.length > 0) {
+          plainText += `\n\n[Speaker ${monologue.speaker}]\n`;
+        }
+        
+        monologue.elements.forEach((element: any) => {
+          if (element.type === 'text') {
+            plainText += element.value + ' ';
+          }
+        });
+      });
+    }
+    
+    console.log('Rev.ai transcript retrieved successfully');
+    return plainText.trim();
+  } catch (error) {
+    console.error('Error getting Rev.ai transcript:', error);
+    throw error;
+  }
+}
+
+// Function to poll for Rev.ai job completion
+async function pollRevAiJobCompletion(jobId: string, maxAttempts = 60, delayMs = 10000) {
+  console.log(`Polling for Rev.ai job completion: ${jobId}`);
+  
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const jobStatus = await getRevAiJobStatus(jobId);
+      
+      if (jobStatus.status === 'transcribed') {
+        console.log(`Rev.ai job completed after ${attempt} attempts`);
+        return await getRevAiTranscript(jobId);
+      } else if (jobStatus.status === 'failed') {
+        throw new Error(`Rev.ai job failed: ${jobStatus.failure_detail}`);
+      }
+      
+      console.log(`Rev.ai job not ready yet (attempt ${attempt}/${maxAttempts}). Status: ${jobStatus.status}`);
+      await wait(delayMs);
+    } catch (error) {
+      console.error(`Error polling Rev.ai job (attempt ${attempt}/${maxAttempts}):`, error);
+      
+      // If we've reached max retries, throw the error
+      if (attempt >= maxAttempts) {
+        throw error;
+      }
+      
+      // Otherwise wait and try again
+      await wait(delayMs);
+    }
+  }
+  
+  throw new Error(`Rev.ai job did not complete after ${maxAttempts} polling attempts`);
+}
+
 // Function to process large files in chunks
 async function processLargeAudioFile(url: string, openai: OpenAI, transcriptionId: string) {
-  console.log('Processing large audio file in chunks');
+  console.log('Processing large audio file');
   
   try {
     // Fetch the file to determine its size and type
@@ -110,9 +252,81 @@ async function processLargeAudioFile(url: string, openai: OpenAI, transcriptionI
       })
       .eq('id', transcriptionId);
     
-    // For very large files, we'll use a different approach
-    // We'll process the first 5 minutes of the audio to get a quick result
-    console.log('Starting partial transcription process');
+    // Check if file is larger than Whisper's limit but smaller than our max file size
+    if (contentLength > WHISPER_FILE_SIZE_LIMIT && contentLength <= MAX_FILE_SIZE) {
+      console.log('File exceeds Whisper limit, using Rev.ai for transcription');
+      
+      // Update status to indicate we're using Rev.ai
+      await supabase
+        .from('transcriptions')
+        .update({
+          status: 'processing',
+          transcription_text: 'Using Rev.ai for transcription. This may take several minutes.',
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', transcriptionId);
+      
+      // Check if Rev.ai API key is configured
+      if (!REV_AI_API_KEY) {
+        throw new Error('Rev.ai API key not configured. Please set the REV_AI_API_KEY environment variable.');
+      }
+      
+      // Start a background process to handle the Rev.ai transcription
+      // This won't block the API response
+      (async () => {
+        try {
+          console.log('Starting background processing with Rev.ai');
+          
+          // Submit job to Rev.ai
+          const job = await submitRevAiJob(url);
+          
+          // Update the database with the Rev.ai job ID
+          await supabase
+            .from('transcriptions')
+            .update({
+              status: 'processing',
+              transcription_text: `Rev.ai transcription in progress. Job ID: ${job.id}`,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', transcriptionId);
+          
+          // Poll for job completion
+          const transcriptionText = await pollRevAiJobCompletion(job.id);
+          
+          // Update the database with the complete transcription
+          await supabase
+            .from('transcriptions')
+            .update({
+              status: 'completed',
+              transcription_text: transcriptionText,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', transcriptionId);
+            
+          console.log('Rev.ai transcription completed and saved to database');
+        } catch (backgroundError: unknown) {
+          console.error('Background Rev.ai transcription process failed:', backgroundError);
+          
+          // Update the database with the error
+          await supabase
+            .from('transcriptions')
+            .update({
+              status: 'error',
+              error: `Rev.ai processing failed: ${backgroundError instanceof Error ? backgroundError.message : String(backgroundError)}`,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', transcriptionId);
+        }
+      })().catch(error => {
+        console.error('Unhandled error in Rev.ai background process:', error);
+      });
+      
+      // Return a message indicating Rev.ai is being used
+      return "Large file detected. Using Rev.ai for transcription. This may take several minutes.";
+    }
+    
+    // For files under Whisper's limit or if Rev.ai is not configured, use the original chunked approach
+    console.log('Using original chunked approach with Whisper');
     
     // Get a buffer of the first part of the file (up to 5MB)
     const buffer = await response.arrayBuffer();
@@ -632,7 +846,7 @@ export async function POST(request: NextRequest) {
       const fileResponse = await fetch(presignedUrlData.signedUrl, { method: 'HEAD' });
       const fileSize = parseInt(fileResponse.headers.get('content-length') || '0');
       
-      console.log(`File size: ${fileSize} bytes, Max direct: ${MAX_DIRECT_TRANSCRIPTION_SIZE} bytes, Max allowed: ${MAX_FILE_SIZE} bytes`);
+      console.log(`File size: ${fileSize} bytes, Whisper limit: ${WHISPER_FILE_SIZE_LIMIT} bytes, Max allowed: ${MAX_FILE_SIZE} bytes`);
       
       // Check if the file exceeds our maximum allowed size
       if (fileSize > MAX_FILE_SIZE) {
@@ -653,11 +867,17 @@ export async function POST(request: NextRequest) {
         }, { status: 413 }); // 413 Payload Too Large
       }
       
-      // For files larger than direct transcription size but within our max limit, use chunked approach
-      if (fileSize > MAX_DIRECT_TRANSCRIPTION_SIZE) {
-        console.log(`File is too large for direct transcription (${fileSize} bytes), using chunked approach`);
+      // Check if Rev.ai API key is set for large files
+      const revAiApiKey = process.env.REV_AI_API_KEY;
+      if (!revAiApiKey && fileSize > WHISPER_FILE_SIZE_LIMIT) {
+        console.log('Warning: Rev.ai API key not configured. Large files may fail to transcribe.');
+      }
+      
+      // For files larger than Whisper's limit but within our max limit, use Rev.ai
+      if (fileSize > WHISPER_FILE_SIZE_LIMIT) {
+        console.log(`File is too large for Whisper (${fileSize} bytes), using Rev.ai approach`);
         
-        // Use the processLargeAudioFile function to handle large files
+        // Use the processLargeAudioFile function which now handles Rev.ai integration
         const partialTranscription = await processLargeAudioFile(presignedUrlData.signedUrl, openai, transcriptionData.id);
         
         return NextResponse.json({
@@ -665,7 +885,7 @@ export async function POST(request: NextRequest) {
           transcriptionId: transcriptionData.id,
           text: partialTranscription,
           isPartial: true,
-          message: "Large file detected. A partial transcription has been generated. The full transcription is being processed in the background."
+          message: "Large file detected. Using Rev.ai for transcription. This may take several minutes."
         });
       }
     } catch (sizeCheckError: unknown) {
@@ -685,7 +905,7 @@ export async function POST(request: NextRequest) {
         // Use retry logic for fetching the audio file
         const response = await retryWithExponentialBackoff(
           async () => {
-            const fetchResponse = await fetch(presignedUrlData.signedUrl, { signal: controller.signal });
+            const fetchResponse = await fetch(presignedUrlData.signedUrl);
             if (!fetchResponse.ok) {
               throw new Error(`Failed to fetch audio file: ${fetchResponse.status} ${fetchResponse.statusText}`);
             }
@@ -696,13 +916,14 @@ export async function POST(request: NextRequest) {
           2  // Double the delay each time
         );
         
-        const audioBlob = await response.blob();
+        // Get the audio data as an ArrayBuffer instead of Blob to avoid type issues
+        const audioBuffer = await response.arrayBuffer();
         
-        // Create a File object from the Blob
+        // Create a File object from the ArrayBuffer
         const audioFile = new File(
-          [audioBlob], 
+          [audioBuffer], 
           mediaFileName || 'audio.mp3', 
-          { type: audioBlob.type || 'audio/mpeg' }
+          { type: response.headers.get('content-type') || 'audio/mpeg' }
         );
         
         console.log('Sending audio file to OpenAI for transcription...');
@@ -713,7 +934,7 @@ export async function POST(request: NextRequest) {
             return await openai.audio.transcriptions.create({
               file: audioFile,
               model: 'whisper-1',
-            }, { signal: controller.signal });
+            });
           },
           3,  // 3 retries
           2000, // Start with 2 second delay
@@ -881,11 +1102,8 @@ export async function POST(request: NextRequest) {
 export const config = {
   api: {
     bodyParser: {
-      sizeLimit: '100mb',
+      sizeLimit: '10mb', // Limit request body size to 10MB
     },
-    externalResolver: true, // This tells Next.js that this route will handle its own errors
+    externalResolver: true, // Ensures all errors are properly formatted as JSON
   },
-  runtime: 'edge',
-  regions: ['iad1'], // Use your preferred Vercel region
-  maxDuration: 600, // Increase maximum duration to 10 minutes (in seconds)
 };
