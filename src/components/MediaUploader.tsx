@@ -771,10 +771,10 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       return;
     }
     
-    // Validate inputs before proceeding
-    if (!finalTranscriptionId) {
-      console.error('Missing transcription ID, cannot generate summary');
-      setErrorMessage('Cannot generate summary: Missing transcription ID');
+    // Enhanced validation for transcription ID
+    if (!finalTranscriptionId || typeof finalTranscriptionId !== 'string' || finalTranscriptionId.trim() === '') {
+      console.error('Missing or invalid transcription ID, cannot generate summary');
+      setErrorMessage('Cannot generate summary: Missing or invalid transcription ID');
       return;
     }
     
@@ -1227,10 +1227,10 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       return;
     }
     
-    // Validate transcription ID
-    if (!transcriptionId) {
+    // Enhanced validation for transcription ID
+    if (!transcriptionId || typeof transcriptionId !== 'string' || transcriptionId.trim() === '') {
       console.error('Invalid transcription ID for analysis');
-      setErrorMessage('Cannot analyze: Missing transcription ID');
+      setErrorMessage('Cannot analyze: Missing or invalid transcription ID');
       return;
     }
     
@@ -2374,8 +2374,14 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
 
   useEffect(() => {
     const autoGenerateWhenTranscriptionAvailable = async () => {
-      // Only proceed if we have a transcription record with text
-      if (!transcriptionRecord || !transcriptionRecord.transcriptionText) {
+      // Only proceed if we have a transcription record with text and a valid ID
+      if (!transcriptionRecord || !transcriptionRecord.transcriptionText || !transcriptionRecord.id) {
+        return;
+      }
+      
+      // Additional validation to prevent errors in the console
+      if (typeof transcriptionRecord.id !== 'string' || transcriptionRecord.id.trim() === '') {
+        console.warn('Invalid transcription ID, cannot auto-generate summary or analysis');
         return;
       }
       
