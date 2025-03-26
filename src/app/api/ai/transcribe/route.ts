@@ -12,14 +12,39 @@ export const config = {
   },
 };
 
-// Create a Supabase client for authentication
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-  process.env.SUPABASE_SERVICE_KEY || ''
-);
+// Create a Supabase client for authentication with better error handling
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
+
+// Validate environment variables
+if (!supabaseUrl || !supabaseKey) {
+  console.error('Missing required environment variables for Supabase:');
+  console.error(`NEXT_PUBLIC_SUPABASE_URL: ${supabaseUrl ? 'Set' : 'Missing'}`);
+  console.error(`SUPABASE_SERVICE_KEY: ${supabaseKey ? 'Set' : 'Missing'}`);
+}
+
+// Create the client only if both URL and key are available
+const supabase = supabaseUrl && supabaseKey 
+  ? createClient(supabaseUrl, supabaseKey)
+  : null;
 
 export async function POST(req: NextRequest) {
   try {
+    // Check if Supabase client was initialized properly
+    if (!supabase) {
+      console.error('Supabase client not initialized due to missing environment variables');
+      return new Response(
+        JSON.stringify({ 
+          success: false, 
+          error: 'Server configuration error: Database client not initialized' 
+        }),
+        { 
+          status: 500, 
+          headers: { 'Content-Type': 'application/json' } 
+        }
+      );
+    }
+    
     // Get the access token from the Authorization header
     const authHeader = req.headers.get('authorization');
     const accessToken = authHeader ? authHeader.split(' ')[1] : null;

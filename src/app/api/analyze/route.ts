@@ -7,18 +7,38 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+// Force no caching to prevent stale responses
+export const fetchCache = 'force-no-store';
+
 // Set a longer timeout for this route (5 minutes)
 export const maxDuration = 300; // 5 minutes in seconds (maximum allowed on Vercel Pro plan)
 
-// Set a larger body size limit
+// Set a larger body size limit and enable external resolver
 export const config = {
   api: {
     bodyParser: {
       sizeLimit: '10mb',
     },
     responseLimit: false,
+    externalResolver: true,
   },
 };
+
+// Create a Supabase client with better error handling
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
+
+// Validate environment variables
+if (!supabaseUrl || !supabaseKey) {
+  console.error('Missing required environment variables for Supabase:');
+  console.error(`NEXT_PUBLIC_SUPABASE_URL: ${supabaseUrl ? 'Set' : 'Missing'}`);
+  console.error(`SUPABASE_SERVICE_KEY: ${supabaseKey ? 'Set' : 'Missing'}`);
+}
+
+// Create the client only if both URL and key are available
+const supabase = supabaseUrl && supabaseKey 
+  ? createClient(supabaseUrl, supabaseKey)
+  : null;
 
 // Maximum text length to analyze
 const MAX_TEXT_LENGTH = 15000;
@@ -27,6 +47,21 @@ export async function POST(req: Request) {
   console.log('Analysis API: Starting POST handler');
   
   try {
+    // Check if Supabase client was initialized properly
+    if (!supabase) {
+      console.error('Supabase client not initialized due to missing environment variables');
+      return new Response(
+        JSON.stringify({ 
+          success: false, 
+          error: 'Server configuration error: Database client not initialized' 
+        }),
+        { 
+          status: 500, 
+          headers: { 'Content-Type': 'application/json' } 
+        }
+      );
+    }
+    
     // Log request headers to help debug
     const headers = Object.fromEntries(req.headers.entries());
     console.log('Request headers:', JSON.stringify(headers, null, 2));
@@ -115,28 +150,9 @@ export async function POST(req: Request) {
     }
     
     // Set up Supabase clients
-    let supabase;
     let supabaseAdmin;
     
     try {
-      // Initialize Supabase client with user token if provided
-      if (accessToken) {
-        console.log('Analysis API: Using user token for authentication');
-        supabase = createClient(
-          process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-          process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
-          {
-            global: { headers: { Authorization: `Bearer ${accessToken}` } },
-          }
-        );
-      } else {
-        console.log('Analysis API: Using anon key for regular client');
-        supabase = createClient(
-          process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-          process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
-        );
-      }
-      
       // Always initialize admin client with service role for database operations
       console.log('Analysis API: Using service role key for admin client');
       supabaseAdmin = createClient(
@@ -226,7 +242,7 @@ export async function POST(req: Request) {
     } else {
       // Otherwise, fetch from database
       console.log('Querying for transcription with ID:', transcriptionId);
-      const { data: transcription, error: directError } = await supabase
+      const { data: transcription, error: directError } = await supabaseAdmin
         .from('transcriptions')
         .select('*')
         .eq('id', transcriptionId)
@@ -475,7 +491,7 @@ export async function POST(req: Request) {
       }
 
       // Double-check that the record was updated correctly
-      const { data: updatedRecord, error: checkError } = await supabase
+      const { data: updatedRecord, error: checkError } = await supabaseAdmin
         .from('transcriptions')
         .select('id, analysis_status, analysis_data')
         .eq('id', transcriptionId)
