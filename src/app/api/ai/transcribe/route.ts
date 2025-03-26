@@ -12,11 +12,15 @@ export const config = {
   },
 };
 
-// Create a Supabase client for authentication
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-  process.env.SUPABASE_SERVICE_KEY || ''
-);
+// Create the client only if both URL and key are available
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
+const supabase = supabaseUrl && supabaseKey 
+  ? createClient(supabaseUrl, supabaseKey)
+  : createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL || '', 
+      process.env.SUPABASE_SERVICE_KEY || ''
+    );
 
 export async function POST(req: NextRequest) {
   try {

@@ -5,34 +5,33 @@ import { NextRequest, NextResponse } from 'next/server';
 import OpenAI from 'openai';
 
 // Initialize environment variables
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-// Check if required environment variables are set
-if (!supabaseUrl) {
-  console.error('NEXT_PUBLIC_SUPABASE_URL is not set');
+// Validate environment variables
+if (!supabaseUrl || !serviceRoleKey) {
+  console.error('Missing required environment variables for Supabase:');
+  console.error(`NEXT_PUBLIC_SUPABASE_URL: ${supabaseUrl ? 'Set' : 'Missing'}`);
+  console.error(`SUPABASE_SERVICE_ROLE_KEY: ${serviceRoleKey ? 'Set' : 'Missing'}`);
+  console.error(`NEXT_PUBLIC_SUPABASE_ANON_KEY: ${anonKey ? 'Set' : 'Missing'}`);
 }
 
-if (!serviceRoleKey) {
-  console.warn('SUPABASE_SERVICE_ROLE_KEY is not set - falling back to anon key');
-}
-
-if (!anonKey && !serviceRoleKey) {
-  console.error('Neither SUPABASE_SERVICE_ROLE_KEY nor NEXT_PUBLIC_SUPABASE_ANON_KEY is set');
-}
-
-// Create Supabase client with anon key for regular operations
-const supabase = createClient(
-  supabaseUrl,
-  anonKey || 'MISSING_ANON_KEY'
-);
+// Create the client only if both URL and key are available
+const supabase = supabaseUrl && serviceRoleKey 
+  ? createClient(supabaseUrl, serviceRoleKey)
+  : createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL || '', 
+      process.env.SUPABASE_SERVICE_ROLE_KEY || ''
+    );
 
 // Create Supabase admin client with service role key for bypassing RLS
-const supabaseAdmin = createClient(
-  supabaseUrl,
-  serviceRoleKey || anonKey || 'MISSING_API_KEY'
-);
+const supabaseAdmin = supabaseUrl && serviceRoleKey 
+  ? createClient(supabaseUrl, serviceRoleKey)
+  : createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL || '', 
+      process.env.SUPABASE_SERVICE_ROLE_KEY || ''
+    );
 
 // Log which keys we're using (without exposing the actual keys)
 console.log(`Summarize API: Using ${anonKey ? 'anon' : 'missing'} key for regular client`);

@@ -119,12 +119,20 @@ export async function POST(req: Request) {
     let supabaseAdmin;
     
     try {
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+      const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+      if (!supabaseUrl || !supabaseKey) {
+        console.warn('Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY environment variable. Using fallback values.');
+      }
+
       // Initialize Supabase client with user token if provided
       if (accessToken) {
         console.log('Analysis API: Using user token for authentication');
         supabase = createClient(
-          process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-          process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
+          supabaseUrl || '',
+          supabaseKey || '',
           {
             global: { headers: { Authorization: `Bearer ${accessToken}` } },
           }
@@ -132,16 +140,16 @@ export async function POST(req: Request) {
       } else {
         console.log('Analysis API: Using anon key for regular client');
         supabase = createClient(
-          process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-          process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
+          supabaseUrl || '',
+          supabaseKey || ''
         );
       }
       
       // Always initialize admin client with service role for database operations
       console.log('Analysis API: Using service role key for admin client');
       supabaseAdmin = createClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-        process.env.SUPABASE_SERVICE_ROLE_KEY || ''
+        supabaseUrl || '',
+        supabaseServiceKey || ''
       );
     } catch (error) {
       console.error('Error initializing Supabase clients:', error);
