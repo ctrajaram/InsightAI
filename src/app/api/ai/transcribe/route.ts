@@ -16,6 +16,15 @@ export const config = {
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
+// Add debug logging for environment variables
+console.log('TRANSCRIBE API: Environment variables check:', {
+  supabaseUrl: !!supabaseUrl ? 'Set' : 'Missing',
+  supabaseKey: !!supabaseKey ? 'Set' : 'Missing',
+  revAiApiKey: !!process.env.REV_AI_API_KEY ? 'Set' : 'Missing',
+  nodeEnv: process.env.NODE_ENV,
+  vercelEnv: process.env.VERCEL_ENV
+});
+
 // Declare Supabase client variable but don't initialize it yet
 let supabase: ReturnType<typeof createClient> | null = null;
 
@@ -34,10 +43,12 @@ if (typeof window === 'undefined' && supabaseUrl && supabaseKey) {
 
 export async function POST(req: NextRequest) {
   try {
+    console.log('TRANSCRIBE API: POST request received');
     // Get the access token from the Authorization header
     const authHeader = req.headers.get('authorization');
     const accessToken = authHeader ? authHeader.split(' ')[1] : null;
     
+    console.log('TRANSCRIBE API: Access token check:', !!accessToken ? 'Present' : 'Missing');
     // Check for authentication token
     if (!accessToken) {
       console.error('No access token provided');
@@ -89,6 +100,7 @@ export async function POST(req: NextRequest) {
     // Get the form data
     const formData = await req.formData();
     
+    console.log('TRANSCRIBE API: Form data received');
     // Get the audio file from the form data
     const audioFile = formData.get('audio') as File;
     
@@ -105,6 +117,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    console.log('TRANSCRIBE API: Audio file received');
     // Check if Rev.ai API key is configured
     const revAiApiKey = typeof window === 'undefined' ? process.env.REV_AI_API_KEY || '' : '';
     if (!revAiApiKey) {
@@ -121,6 +134,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    console.log('TRANSCRIBE API: Rev.ai API key check:', !!revAiApiKey ? 'Configured' : 'Missing');
     // We need to create a temporary URL for the audio file
     // For this demo route, we'll use a different approach:
     // 1. Upload the file to a temporary storage
@@ -133,6 +147,7 @@ export async function POST(req: NextRequest) {
     const base64Audio = Buffer.from(audioBuffer).toString('base64');
     const dataUrl = `data:${audioFile.type};base64,${base64Audio}`;
     
+    console.log('TRANSCRIBE API: Audio file converted to data URL');
     // Submit the audio file to Rev.ai for transcription using the URL approach
     const response = await fetch('https://api.rev.ai/speechtotext/v1/jobs', {
       method: 'POST',
@@ -148,6 +163,7 @@ export async function POST(req: NextRequest) {
       })
     });
 
+    console.log('TRANSCRIBE API: Rev.ai job submission attempt');
     if (!response.ok) {
       const errorText = await response.text();
       console.error('Rev.ai job submission failed:', errorText);
@@ -167,6 +183,7 @@ export async function POST(req: NextRequest) {
     const job = await response.json();
     const jobId = job.id;
 
+    console.log('TRANSCRIBE API: Rev.ai job submitted successfully:', jobId);
     // Poll for job completion
     let transcriptionText = '';
     let attempts = 0;
@@ -175,6 +192,7 @@ export async function POST(req: NextRequest) {
     while (attempts < maxAttempts) {
       attempts++;
       
+      console.log('TRANSCRIBE API: Checking Rev.ai job status:', jobId);
       // Check job status
       const statusResponse = await fetch(`https://api.rev.ai/speechtotext/v1/jobs/${jobId}`, {
         method: 'GET',
@@ -202,6 +220,7 @@ export async function POST(req: NextRequest) {
       const jobStatus = await statusResponse.json();
       
       if (jobStatus.status === 'transcribed') {
+        console.log('TRANSCRIBE API: Rev.ai job completed:', jobId);
         // Get the transcript
         const transcriptResponse = await fetch(`https://api.rev.ai/speechtotext/v1/jobs/${jobId}/transcript`, {
           method: 'GET',
@@ -258,6 +277,7 @@ export async function POST(req: NextRequest) {
       }
       
       // Wait before checking again
+      console.log('TRANSCRIBE API: Waiting for Rev.ai job to complete...');
       await new Promise(resolve => setTimeout(resolve, 10000)); // 10 seconds
     }
     
@@ -274,6 +294,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    console.log('TRANSCRIBE API: Transcription completed successfully');
     return new Response(
       JSON.stringify({ 
         transcript: transcriptionText.trim() 

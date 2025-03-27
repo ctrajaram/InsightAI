@@ -2050,6 +2050,8 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
         return;
       }
       
+      console.log('Transcription available, checking if summary and analysis need to be generated');
+      
       // Check authentication first
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) {
@@ -2058,7 +2060,7 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       }
       
       // Auto-generate summary if it's not already summarized or in progress
-      if (transcriptionRecord.summaryStatus !== 'completed' && 
+      if ((!transcriptionRecord.summaryText || transcriptionRecord.isPlaceholderSummary) && 
           transcriptionRecord.summaryStatus !== 'processing') {
         try {
           console.log('Auto-triggering summary for transcription:', transcriptionRecord.id);
@@ -2069,7 +2071,7 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       }
       
       // Auto-analyze sentiment if it's not already analyzed or in progress
-      if (transcriptionRecord.analysisStatus !== 'completed' && 
+      if (!transcriptionRecord.analysisData && 
           transcriptionRecord.analysisStatus !== 'processing') {
         try {
           console.log('Auto-triggering analysis for transcription:', transcriptionRecord.id);
@@ -2469,6 +2471,191 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
     requestAnalysis, 
     supabase
   ]);
+
+  const handleAnalyzeTranscription = async () => {
+    if (!transcriptionRecord || !transcriptionRecord.id) {
+      console.error('Cannot analyze: No transcription record available');
+      return;
+    }
+    
+    // Skip if already analyzing
+    if (isAnalyzing) {
+      console.log('Analysis already in progress, skipping duplicate request');
+      return;
+    }
+    
+    console.log('Starting analysis for transcription:', transcriptionRecord.id);
+    setIsAnalyzing(true);
+    setAnalysisStatus('processing');
+    
+    try {
+      // Get a fresh token for authentication
+      const authToken = await getAuthToken();
+      if (!authToken) {
+        console.error('Failed to get auth token for analysis');
+        setAnalysisError('Authentication error. Please sign in again.');
+        setAnalysisStatus('error');
+        setIsAnalyzing(false);
+        return;
+      }
+      
+      console.log('Sending analysis request to API...');
+      
+      // Create an AbortController for timeout handling
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minute timeout
+      
+      try {
+        // Make the API request with the signal from AbortController
+        const response = await fetch('/api/analyze', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${authToken}`
+          },
+          body: JSON.stringify({
+            transcriptionId: transcriptionRecord.id,
+            // Include the text directly to avoid database lookups
+            transcriptionText: transcriptionRecord.transcriptionText
+          }),
+          signal: controller.signal
+        });
+        
+        // Clear the timeout
+        clearTimeout(timeoutId);
+        
+        console.log('Analysis API response status:', response.status);
+        
+        // Clone the response for potential error handling
+        const responseClone = response.clone();
+        
+        if (!response.ok) {
+          let errorMessage = 'Failed to analyze transcription';
+          
+          try {
+            // Try to parse as JSON first
+            const errorData = await response.json();
+            console.error('Analysis API error:', errorData);
+            errorMessage = errorData.error || errorData.message || errorMessage;
+            
+            // Check if this is a "still processing" response (202 status)
+            if (response.status === 202 && errorData.isPartial) {
+              console.log('Transcription still processing, cannot analyze yet');
+              setAnalysisStatus('pending');
+              setIsAnalyzing(false);
+              return;
+            }
+          } catch (jsonError) {
+            // If JSON parsing fails, try to get the text
+            try {
+              const errorText = await responseClone.text();
+              console.error('Analysis API error (text):', errorText);
+              errorMessage = errorText || errorMessage;
+            } catch (textError) {
+              console.error('Failed to read error response:', textError);
+            }
+          }
+          
+          // Check if this is an authentication error
+          if (response.status === 401 || errorMessage.includes('authentication') || errorMessage.includes('sign in')) {
+            console.log('Authentication error detected, attempting to refresh session...');
+            const refreshed = await refreshSession();
+            
+            if (refreshed) {
+              console.log('Session refreshed, retrying analysis...');
+              // Try again with the refreshed session
+              setIsAnalyzing(false);
+              setTimeout(() => handleAnalyzeTranscription(), 1000);
+              return;
+            }
+          }
+          
+          // If we get here, it's a real error
+          console.error(`Analysis failed: ${errorMessage}`);
+          setAnalysisError(errorMessage);
+          setAnalysisStatus('error');
+          setIsAnalyzing(false);
+          return;
+        }
+        
+        // Parse the successful response
+        try {
+          const data = await response.json();
+          console.log('Analysis completed successfully:', data.success);
+          
+          if (data.analysis) {
+            console.log('Analysis data received:', Object.keys(data.analysis).join(', '));
+            setAnalysisData(data.analysis);
+            setAnalysisStatus('completed');
+            
+            // Verify the data was saved to the database
+            console.log('Verifying analysis data was saved to database...');
+            try {
+              const { data: dbRecord, error: dbError } = await supabase
+                .from('transcriptions')
+                .select('id, analysis_status, analysis_data')
+                .eq('id', transcriptionRecord.id)
+                .single();
+                
+              if (dbError) {
+                console.error('Error verifying analysis data:', dbError);
+              } else {
+                console.log('Database record analysis status:', dbRecord.analysis_status);
+                console.log('Database has analysis data:', !!dbRecord.analysis_data);
+                
+                // If the database doesn't have the analysis data, try to save it manually
+                if (!dbRecord.analysis_data && data.analysis) {
+                  console.log('Analysis data missing in database, saving manually...');
+                  const formattedData = formatAnalysisDataForDb(data.analysis);
+                  const { error: updateError } = await updateAnalysisData(
+                    supabase,
+                    transcriptionRecord.id,
+                    formattedData
+                  );
+                  
+                  if (updateError) {
+                    console.error('Failed to manually save analysis data:', updateError);
+                  } else {
+                    console.log('Analysis data manually saved to database');
+                  }
+                }
+              }
+            } catch (verifyError) {
+              console.error('Error during database verification:', verifyError);
+            }
+          } else {
+            console.error('Analysis response missing analysis data');
+            setAnalysisError('Analysis completed but no data was returned');
+            setAnalysisStatus('error');
+          }
+        } catch (parseError) {
+          console.error('Error parsing analysis response:', parseError);
+          setAnalysisError('Failed to parse analysis results');
+          setAnalysisStatus('error');
+        }
+      } catch (fetchError: any) {
+        // Clear the timeout if it hasn't fired yet
+        clearTimeout(timeoutId);
+        
+        // Handle abort/timeout specifically
+        if (fetchError.name === 'AbortError') {
+          console.error('Analysis request timed out after 2 minutes');
+          setAnalysisError('Analysis timed out. The server took too long to respond.');
+        } else {
+          console.error('Error during analysis fetch:', fetchError);
+          setAnalysisError(fetchError.message || 'Network error during analysis');
+        }
+        
+        setAnalysisStatus('error');
+      }
+    } catch (error: any) {
+      console.error('Unexpected error during analysis:', error);
+      setAnalysisError(error.message || 'An unexpected error occurred');
+      setAnalysisStatus('error');
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
 
   return (
     <div className="container mx-auto px-4 py-6 max-w-4xl">
