@@ -560,12 +560,21 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
           console.log('Polling for completed transcription...');
           const { data: pollData, error: pollError } = await supabase
             .from('transcriptions')
-            .select('id, status, transcription_text')
+            .select('id, status, transcription_text, rev_ai_job_id, error')
             .eq('id', transcriptionId)
             .single();
             
           if (pollError) {
             console.error('Error polling for transcription:', pollError);
+            return;
+          }
+          
+          // Check if there's an error status
+          if (pollData.status === 'error') {
+            console.error('Transcription failed with error:', pollData.error);
+            clearInterval(pollInterval);
+            setTranscriptionStatus('error');
+            setError(`Transcription failed: ${pollData.error || 'Unknown error'}`);
             return;
           }
           

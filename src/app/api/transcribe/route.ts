@@ -110,6 +110,23 @@ async function submitRevAiJob(mediaUrl: string) {
   console.log('Submitting job to Rev.ai API');
   
   try {
+    // Construct the webhook URL based on the deployment URL or localhost for development
+    let baseUrl = 'http://localhost:3000'; // Default for local development
+    
+    // In production on Vercel
+    if (process.env.VERCEL_URL) {
+      baseUrl = `https://${process.env.VERCEL_URL}`;
+      console.log('Using Vercel URL for webhook:', baseUrl);
+    } 
+    // If you've set a custom app URL
+    else if (process.env.NEXT_PUBLIC_APP_URL) {
+      baseUrl = process.env.NEXT_PUBLIC_APP_URL;
+      console.log('Using custom app URL for webhook:', baseUrl);
+    }
+    
+    const webhookUrl = `${baseUrl}/api/rev-ai-webhook`;
+    console.log('Final webhook URL:', webhookUrl);
+    
     const response = await fetch(`${REV_AI_BASE_URL}/jobs`, {
       method: 'POST',
       headers: {
@@ -120,7 +137,8 @@ async function submitRevAiJob(mediaUrl: string) {
         source_config: {
           url: mediaUrl
         },
-        metadata: 'InsightAI Transcription'
+        metadata: 'InsightAI Transcription',
+        callback_url: webhookUrl
       })
     });
     
@@ -330,6 +348,7 @@ async function processAudioFile(url: string, transcriptionId: string) {
             .update({
               status: 'processing',
               transcription_text: `Rev.ai transcription in progress. Job ID: ${job.id}`,
+              rev_ai_job_id: job.id,
               updated_at: new Date().toISOString()
             })
             .eq('id', transcriptionId);
