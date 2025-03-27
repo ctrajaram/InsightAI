@@ -584,15 +584,24 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
             
             // Update the UI with the complete transcription
             setTranscriptionStatus('completed');
-            setTranscriptionRecord(prev => ({
-              ...prev!,
+            
+            // Create a stable copy of the transcription data to use throughout the process
+            const completedTranscription = {
+              ...transcriptionRecord!,
               transcriptionText: pollData.transcription_text || '',
-              status: 'completed',
-            }));
+              status: 'completed' as const,
+            };
+            
+            // Update the UI state first
+            setTranscriptionRecord(completedTranscription);
+            
+            // Wait a moment for the UI to stabilize before starting additional processing
+            await new Promise(resolve => setTimeout(resolve, 500));
             
             // Start summarization and analysis with the complete transcription
             try {
-              await generateSummaryForTranscription(transcriptionId, pollData.transcription_text || '');
+              console.log('Starting automatic summarization...');
+              await generateSummaryForTranscription(transcriptionId, completedTranscription.transcriptionText);
               
               // After summary is complete, automatically start analysis
               try {

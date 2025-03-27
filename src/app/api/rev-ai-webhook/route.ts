@@ -81,6 +81,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'No job ID in webhook payload' }, { status: 400 });
     }
     
+    console.log(`Processing Rev AI webhook for job ${jobId} with status ${status}`);
+    
     // Check if Supabase client is initialized
     if (!supabaseAdmin) {
       console.error('Supabase admin client not initialized');
@@ -90,15 +92,24 @@ export async function POST(request: NextRequest) {
     // Find the transcription record with this Rev AI job ID
     const { data: transcriptions, error: findError } = await supabaseAdmin
       .from('transcriptions')
-      .select('id')
+      .select('id, status')
       .eq('rev_ai_job_id', jobId);
       
-    if (findError || !transcriptions || transcriptions.length === 0) {
-      console.error('Could not find transcription with Rev AI job ID:', jobId, findError);
+    if (findError) {
+      console.error('Database error when finding transcription:', findError);
+      return NextResponse.json({ error: 'Database error when finding transcription' }, { status: 500 });
+    }
+    
+    if (!transcriptions || transcriptions.length === 0) {
+      console.error('Could not find transcription with Rev AI job ID:', jobId);
       return NextResponse.json({ error: 'Transcription not found' }, { status: 404 });
     }
     
     const transcriptionId = transcriptions[0].id;
+    console.log(`Found transcription ${transcriptionId} for Rev AI job ${jobId}`);
+    
+    // Log the current status of the transcription in our database
+    console.log(`Current transcription status in database: ${transcriptions[0].status}`);
     
     // If the job is complete, get the transcript and update the database
     if (status === 'transcribed') {
