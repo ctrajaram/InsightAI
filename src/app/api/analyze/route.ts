@@ -5,12 +5,14 @@ import { NextResponse } from 'next/server';
 // Initialize environment variables
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
 const openaiApiKey = process.env.OPENAI_API_KEY || '';
 
 // Add debug logging for environment variables
 console.log('ANALYZE API: Environment variables check:', {
   supabaseUrl: !!supabaseUrl ? 'Set' : 'Missing',
   supabaseServiceRoleKey: !!supabaseServiceRoleKey ? 'Set' : 'Missing',
+  supabaseAnonKey: !!supabaseAnonKey ? 'Set' : 'Missing',
   openaiApiKey: !!openaiApiKey ? 'Set' : 'Missing',
   nodeEnv: process.env.NODE_ENV,
   vercelEnv: process.env.VERCEL_ENV
@@ -37,10 +39,10 @@ if (typeof window === 'undefined') {
   }
   
   // Initialize Supabase client
-  if (supabaseUrl && supabaseServiceRoleKey) {
+  if (supabaseUrl && (supabaseServiceRoleKey || supabaseAnonKey)) {
     try {
-      supabase = createClient(supabaseUrl, supabaseServiceRoleKey);
-      console.log('Analysis API: Supabase client initialized successfully');
+      supabase = createClient(supabaseUrl, supabaseServiceRoleKey || supabaseAnonKey);
+      console.log(`Analysis API: Supabase client initialized with ${supabaseServiceRoleKey ? 'service role' : 'anon'} key`);
     } catch (error) {
       console.error('Failed to initialize Supabase client:', error);
       supabase = null;
@@ -51,18 +53,45 @@ if (typeof window === 'undefined') {
 // Set a longer timeout for this route (5 minutes)
 export const maxDuration = 300; // 5 minutes in seconds (maximum allowed on Vercel Pro plan)
 
-// Set a larger body size limit
+// Prevent caching of this route
+export const fetchCache = 'force-no-store';
+
+// Set a larger body size limit and configure error handling
 export const config = {
   api: {
     bodyParser: {
       sizeLimit: '10mb',
     },
     responseLimit: false,
+    externalResolver: true, // This tells Next.js this route is handled by an external resolver
   },
 };
 
 // Maximum text length to analyze
 const MAX_TEXT_LENGTH = 15000;
+
+// Helper function to retry a database operation with exponential backoff
+async function retryOperation<T>(
+  operation: () => Promise<T>,
+  maxRetries = 3,
+  initialDelay = 500
+): Promise<T> {
+  let lastError: any;
+  let delay = initialDelay;
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      console.log(`Attempt ${attempt} failed, retrying in ${delay}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+      delay *= 1.5; // Exponential backoff
+    }
+  }
+  
+  throw lastError;
+}
 
 export async function POST(req: Request) {
   console.log('Analysis API: Starting POST handler');
@@ -81,11 +110,11 @@ export async function POST(req: Request) {
       return NextResponse.json({
         success: false,
         error: 'Empty request body',
-      }, { status: 400 });
+      } as const, { status: 400 });
     }
     
     // Parse the request body
-    let body;
+    let body: any;
     let bodyText = '';
     
     try {
@@ -104,22 +133,22 @@ export async function POST(req: Request) {
             success: false,
             error: 'Empty request body',
             details: 'Request body was empty despite content-length header indicating content'
-          }, { status: 400 });
+          } as const, { status: 400 });
         }
         
         // Parse the text as JSON
         try {
           body = JSON.parse(bodyText);
           console.log('Successfully parsed request body:', JSON.stringify(body, null, 2));
-        } catch (jsonError) {
+        } catch (jsonError: any) {
           console.error('Failed to parse request body as JSON:', jsonError, 'Raw body:', bodyText);
           return NextResponse.json({
             success: false,
             error: 'Invalid JSON in request body',
             details: jsonError instanceof Error ? jsonError.message : 'Unknown parsing error'
-          }, { status: 400 });
+          } as const, { status: 400 });
         }
-      } catch (textError) {
+      } catch (textError: any) {
         console.error('Failed to read request as text:', textError);
         
         try {
@@ -127,22 +156,22 @@ export async function POST(req: Request) {
           const fallbackReq = req.clone();
           body = await fallbackReq.json();
           console.log('Successfully parsed request body using json() method:', JSON.stringify(body, null, 2));
-        } catch (jsonError) {
+        } catch (jsonError: any) {
           console.error('Failed to parse request body as JSON after text failure:', jsonError);
           return NextResponse.json({
             success: false,
             error: 'Invalid or empty request body',
             details: jsonError instanceof Error ? jsonError.message : 'Unknown parsing error'
-          }, { status: 400 });
+          } as const, { status: 400 });
         }
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Unexpected error processing request body:', error);
       return NextResponse.json({
         success: false,
         error: 'Failed to process request body',
         details: error instanceof Error ? error.message : 'Unknown error'
-      }, { status: 400 });
+      } as const, { status: 400 });
     }
     
     const { transcriptionId, accessToken } = body || {};
@@ -152,7 +181,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ 
         success: false, 
         error: 'Missing required parameter: transcriptionId' 
-      }, { status: 400 });
+      } as const, { status: 400 });
     }
     
     // Initialize Supabase clients
@@ -160,19 +189,19 @@ export async function POST(req: Request) {
     
     try {
       // Initialize Supabase admin client
-      if (supabaseUrl && supabaseServiceRoleKey) {
-        console.log('Analysis API: Using service role key for admin client');
+      if (supabaseUrl && (supabaseServiceRoleKey || supabaseAnonKey)) {
+        console.log(`Analysis API: Using ${supabaseServiceRoleKey ? 'service role' : 'anon'} key for admin client`);
         supabaseAdmin = createClient(
           supabaseUrl,
-          supabaseServiceRoleKey
+          supabaseServiceRoleKey || supabaseAnonKey
         );
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error initializing Supabase admin client:', error);
       return NextResponse.json({ 
         success: false, 
         error: 'Failed to initialize database connection' 
-      }, { status: 500 });
+      } as const, { status: 500 });
     }
     
     // Check if Supabase admin client was initialized
@@ -181,23 +210,32 @@ export async function POST(req: Request) {
       return NextResponse.json({ 
         success: false, 
         error: 'Server configuration error: Database client not initialized' 
-      }, { status: 500 });
+      } as const, { status: 500 });
     }
     
     // Check if the transcription exists and get the current status
-    const { data: transcription, error: fetchError } = await supabaseAdmin
-      .from('transcriptions')
-      .select('id, user_id, transcription_text, analysis_status, analysis_data, status, summary_status, summary_text')
-      .eq('id', transcriptionId)
-      .single();
-    
-    if (fetchError) {
+    let transcription;
+    try {
+      const { data, error } = await retryOperation(async () => {
+        const result = await supabaseAdmin
+          .from('transcriptions')
+          .select('id, user_id, transcription_text, analysis_status, analysis_data, status, summary_status, summary_text')
+          .eq('id', transcriptionId)
+          .single();
+          
+        if (result.error) throw result.error;
+        return result;
+      }, 3, 1000);
+      
+      if (error) throw error;
+      transcription = data;
+    } catch (fetchError: any) {
       console.error('Error fetching transcription:', fetchError);
       return NextResponse.json({ 
         success: false, 
         error: 'Transcription not found',
         details: fetchError.message 
-      }, { status: 404 });
+      } as const, { status: 404 });
     }
     
     // Ensure we have a valid transcription object
@@ -205,7 +243,7 @@ export async function POST(req: Request) {
       return NextResponse.json({
         success: false,
         error: 'Invalid transcription data format'
-      }, { status: 400 });
+      } as const, { status: 400 });
     }
 
     // Check if there's a summary to use for the analysis
@@ -231,7 +269,7 @@ export async function POST(req: Request) {
         status: transcription.status,
         retryAfter: 10, // Suggest client retry after 10 seconds
         isPartial: true
-      }, { status: 202 }); // 202 Accepted is more appropriate than 400 Bad Request
+      } as const, { status: 202 }); // 202 Accepted is more appropriate than 400 Bad Request
     }
     
     // Extract the text to analyze
@@ -246,7 +284,7 @@ export async function POST(req: Request) {
       return NextResponse.json({
         success: false,
         error: 'Invalid transcription text format'
-      }, { status: 400 });
+      } as const, { status: 400 });
     }
     
     // Trim the text if it's too long
@@ -260,7 +298,7 @@ export async function POST(req: Request) {
       return NextResponse.json({
         success: false,
         error: 'Transcription text is empty'
-      }, { status: 400 });
+      } as const, { status: 400 });
     }
 
     // Skip analysis if the text appears to be a processing message
@@ -294,7 +332,7 @@ export async function POST(req: Request) {
           feature_requests: [],
           sentiment_explanation: "This is a system message, not actual conversation content"
         }
-      });
+      } as const);
     }
 
     // Perform analysis with OpenAI
@@ -307,7 +345,7 @@ export async function POST(req: Request) {
         return NextResponse.json({ 
           success: false, 
           error: 'Server configuration error: AI client not initialized' 
-        }, { status: 500 });
+        } as const, { status: 500 });
       }
       
       // Prepare the prompt for OpenAI
@@ -463,7 +501,7 @@ export async function POST(req: Request) {
             success: false, 
             error: 'Failed to save analysis results',
             details: updateError.message 
-          }, { status: 500 });
+          } as const, { status: 500 });
         }
 
         // Double-check that the record was updated correctly
@@ -484,7 +522,7 @@ export async function POST(req: Request) {
         return NextResponse.json({ 
           success: true,
           analysis: analysisData
-        });
+        } as const);
 
       } catch (error: any) {
         console.error('Unexpected error in analysis API:', error);
@@ -492,7 +530,7 @@ export async function POST(req: Request) {
           error: 'Analysis failed',
           message: error.message || 'An unexpected error occurred',
           stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-        }, { status: 500 });
+        } as const, { status: 500 });
       }
     } catch (error: any) {
       console.error('Unexpected error in analysis API:', error);
@@ -500,7 +538,7 @@ export async function POST(req: Request) {
         error: 'Analysis failed',
         message: error.message || 'An unexpected error occurred',
         stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-      }, { status: 500 });
+      } as const, { status: 500 });
     }
   } catch (error: any) {
     console.error('Unexpected error in analysis API:', error);
@@ -508,6 +546,6 @@ export async function POST(req: Request) {
       error: 'Analysis failed',
       message: error.message || 'An unexpected error occurred',
       stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    }, { status: 500 });
+    } as const, { status: 500 });
   }
 }

@@ -124,6 +124,17 @@ async function submitRevAiJob(mediaUrl: string) {
       console.log('Using custom app URL for webhook:', baseUrl);
     }
     
+    // Add additional logging for debugging webhook URL construction
+    console.log('Environment variables for webhook URL:');
+    console.log('- VERCEL_URL:', process.env.VERCEL_URL || 'not set');
+    console.log('- NEXT_PUBLIC_APP_URL:', process.env.NEXT_PUBLIC_APP_URL || 'not set');
+    console.log('- VERCEL_ENV:', process.env.VERCEL_ENV || 'not set');
+    
+    // Force HTTPS for production environments
+    if (process.env.VERCEL_ENV === 'production' && !baseUrl.startsWith('https://')) {
+      baseUrl = baseUrl.replace('http://', 'https://');
+    }
+    
     const webhookUrl = `${baseUrl}/api/rev-ai-webhook`;
     console.log('Final webhook URL:', webhookUrl);
     
