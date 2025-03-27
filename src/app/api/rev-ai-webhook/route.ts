@@ -4,73 +4,153 @@ import { NextRequest, NextResponse } from 'next/server';
 // Initialize environment variables
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
 const REV_AI_API_KEY = typeof window === 'undefined' ? process.env.REV_AI_API_KEY || '' : '';
 const REV_AI_BASE_URL = 'https://api.rev.ai/speechtotext/v1';
+
+// Add debug logging for environment variables
+console.log('Rev AI Webhook: Environment variables check:', {
+  supabaseUrl: !!supabaseUrl ? 'Set' : 'Missing',
+  serviceRoleKey: !!serviceRoleKey ? 'Set' : 'Missing',
+  anonKey: !!anonKey ? 'Set' : 'Missing',
+  revAiApiKey: !!REV_AI_API_KEY ? 'Set' : 'Missing',
+  nodeEnv: process.env.NODE_ENV,
+  vercelEnv: process.env.VERCEL_ENV
+});
 
 // Declare Supabase client variable but don't initialize it yet
 let supabaseAdmin: ReturnType<typeof createClient> | null = null;
 
 // Only initialize if we have the necessary environment variables
 // This prevents errors during build time when env vars aren't available
-if (typeof window === 'undefined' && supabaseUrl && serviceRoleKey) {
+if (typeof window === 'undefined') {
   try {
     // Create Supabase admin client with service role key for bypassing RLS
-    supabaseAdmin = createClient(supabaseUrl, serviceRoleKey);
-    console.log('Rev AI Webhook: Supabase admin client initialized successfully');
+    // Fall back to anon key if service role key is not available
+    if (supabaseUrl && (serviceRoleKey || anonKey)) {
+      supabaseAdmin = createClient(supabaseUrl, serviceRoleKey || anonKey);
+      console.log(`Rev AI Webhook: Supabase client initialized with ${serviceRoleKey ? 'service role' : 'anon'} key`);
+    } else {
+      console.error('Rev AI Webhook: Missing required Supabase environment variables');
+    }
   } catch (error) {
     console.error('Failed to initialize Supabase client:', error);
     supabaseAdmin = null;
   }
 }
 
-// Function to get the transcript from a completed Rev.ai job
-async function getRevAiTranscript(jobId: string) {
+// Helper function to retry a database operation with exponential backoff
+async function retryOperation<T>(
+  operation: () => Promise<T>,
+  maxRetries = 3,
+  initialDelay = 500
+): Promise<T> {
+  let lastError: any;
+  let delay = initialDelay;
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      console.log(`Attempt ${attempt} failed, retrying in ${delay}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+      delay *= 1.5; // Exponential backoff
+    }
+  }
+  
+  throw lastError;
+}
+
+// Function to get a transcript from Rev.ai
+async function getRevAiTranscript(jobId: string): Promise<string> {
+  console.log(`Getting transcript for Rev AI job ${jobId}`);
+  
+  const revAiApiKey = process.env.REV_AI_API_KEY;
+  if (!revAiApiKey) {
+    console.error('Rev AI API key not found');
+    throw new Error('Rev AI API key not configured');
+  }
+  
   try {
-    const response = await fetch(`${REV_AI_BASE_URL}/jobs/${jobId}/transcript`, {
-      method: 'GET',
+    // Get the transcript from Rev.ai
+    const response = await fetch(`https://api.rev.ai/speechtotext/v1/jobs/${jobId}/transcript`, {
       headers: {
-        'Authorization': `Bearer ${REV_AI_API_KEY}`,
+        'Authorization': `Bearer ${revAiApiKey}`,
         'Accept': 'application/vnd.rev.transcript.v1.0+json'
       }
     });
     
     if (!response.ok) {
       const errorText = await response.text();
-      console.error(`Rev.ai transcript retrieval failed for job ${jobId}:`, errorText);
-      throw new Error(`Rev.ai API error: ${response.status} ${response.statusText} - ${errorText}`);
+      console.error(`Rev AI API error (${response.status}): ${errorText}`);
+      throw new Error(`Rev AI API error: ${response.status} ${response.statusText}`);
     }
     
-    const data = await response.json();
+    const data = await response.json() as any;
     
-    // Extract the transcript text from the Rev.ai response
-    let transcriptText = '';
-    if (data.monologues && Array.isArray(data.monologues)) {
-      for (const monologue of data.monologues) {
-        if (monologue.elements && Array.isArray(monologue.elements)) {
-          for (const element of monologue.elements) {
-            if (element.value) {
-              transcriptText += element.value + ' ';
-            }
+    // Extract the transcript text
+    if (!data || !data.monologues) {
+      console.error('Invalid transcript format from Rev.ai:', data);
+      throw new Error('Invalid transcript format from Rev.ai');
+    }
+    
+    // Combine all elements into a single transcript
+    let transcript = '';
+    for (const monologue of data.monologues) {
+      if (monologue.elements) {
+        for (const element of monologue.elements) {
+          if (element.value) {
+            transcript += element.value;
           }
         }
       }
     }
     
-    console.log(`Rev.ai transcript retrieved for job ${jobId}, length: ${transcriptText.length} chars`);
-    return transcriptText.trim();
-  } catch (error) {
-    console.error('Error getting Rev.ai transcript:', error);
+    return transcript;
+  } catch (error: any) {
+    console.error('Error getting transcript from Rev.ai:', error);
     throw error;
   }
 }
+
+// Prevent caching of this route
+export const fetchCache = 'force-no-store';
+
+// Configure route handler
+export const config = {
+  api: {
+    bodyParser: {
+      sizeLimit: '1mb',
+    },
+    externalResolver: true, // This tells Next.js this route is handled by an external resolver (Rev.ai webhook)
+  },
+};
+
+// Define response types to fix TypeScript errors
+type SuccessResponse = { success: true };
+type ErrorResponse = { 
+  success: false; 
+  error: string;
+  details?: string;
+};
 
 export async function POST(request: NextRequest) {
   console.log('Rev AI Webhook received');
   
   try {
     // Parse the webhook payload
-    const payload = await request.json();
-    console.log('Rev AI Webhook payload:', JSON.stringify(payload, null, 2));
+    let payload: any; 
+    try {
+      payload = await request.json();
+      console.log('Rev AI Webhook payload:', JSON.stringify(payload, null, 2));
+    } catch (parseError: any) { 
+      console.error('Failed to parse webhook payload:', parseError);
+      return NextResponse.json({ 
+        success: false, 
+        error: 'Invalid JSON payload' 
+      } as ErrorResponse, { status: 400 });
+    }
     
     // Extract the job ID and status
     const jobId = payload.job?.id;
@@ -78,7 +158,10 @@ export async function POST(request: NextRequest) {
     
     if (!jobId) {
       console.error('No job ID in webhook payload');
-      return NextResponse.json({ error: 'No job ID in webhook payload' }, { status: 400 });
+      return NextResponse.json({ 
+        success: false, 
+        error: 'No job ID in webhook payload' 
+      } as ErrorResponse, { status: 400 });
     }
     
     console.log(`Processing Rev AI webhook for job ${jobId} with status ${status}`);
@@ -86,23 +169,54 @@ export async function POST(request: NextRequest) {
     // Check if Supabase client is initialized
     if (!supabaseAdmin) {
       console.error('Supabase admin client not initialized');
-      return NextResponse.json({ error: 'Database client not initialized' }, { status: 500 });
-    }
-    
-    // Find the transcription record with this Rev AI job ID
-    const { data: transcriptions, error: findError } = await supabaseAdmin
-      .from('transcriptions')
-      .select('id, status')
-      .eq('rev_ai_job_id', jobId);
       
-    if (findError) {
-      console.error('Database error when finding transcription:', findError);
-      return NextResponse.json({ error: 'Database error when finding transcription' }, { status: 500 });
+      // Try to initialize it again as a last resort
+      if (supabaseUrl && (serviceRoleKey || anonKey)) {
+        try {
+          supabaseAdmin = createClient(supabaseUrl, serviceRoleKey || anonKey);
+          console.log('Rev AI Webhook: Supabase client initialized on-demand');
+        } catch (initError: any) { 
+          console.error('Failed to initialize Supabase client on-demand:', initError);
+        }
+      }
+      
+      // If still not initialized, return error
+      if (!supabaseAdmin) {
+        return NextResponse.json({ 
+          success: false, 
+          error: 'Database client not initialized' 
+        } as ErrorResponse, { status: 500 });
+      }
     }
     
-    if (!transcriptions || transcriptions.length === 0) {
+    // Find the transcription record with this Rev AI job ID using retry logic
+    let transcriptions;
+    let findError: any; // Type as 'any' to fix TypeScript errors
+    
+    try {
+      const result = await retryOperation(async () => {
+        const { data, error } = await supabaseAdmin!
+          .from('transcriptions')
+          .select('id, status')
+          .eq('rev_ai_job_id', jobId);
+          
+        if (error) throw error;
+        return data;
+      }, 3, 1000);
+      
+      transcriptions = result;
+    } catch (error: any) { // Type the error as 'any'
+      console.error('Database error when finding transcription after retries:', error);
+      findError = error;
+    }
+    
+    if (findError || !transcriptions || transcriptions.length === 0) {
       console.error('Could not find transcription with Rev AI job ID:', jobId);
-      return NextResponse.json({ error: 'Transcription not found' }, { status: 404 });
+      return NextResponse.json({ 
+        success: false, 
+        error: 'Transcription not found',
+        details: findError ? String(findError) : 'No matching records'
+      } as ErrorResponse, { status: 404 });
     }
     
     const transcriptionId = transcriptions[0].id;
@@ -119,64 +233,115 @@ export async function POST(request: NextRequest) {
         // Get the transcript
         const transcriptText = await getRevAiTranscript(jobId);
         
-        // Update the transcription record
-        const { error: updateError } = await supabaseAdmin
-          .from('transcriptions')
-          .update({
-            status: 'completed',
-            transcription_text: transcriptText,
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', transcriptionId);
-          
-        if (updateError) {
-          console.error('Error updating transcription:', updateError);
-          return NextResponse.json({ error: 'Error updating transcription' }, { status: 500 });
+        if (!transcriptText || transcriptText.trim().length === 0) {
+          console.error('Received empty transcript from Rev.ai');
+          throw new Error('Empty transcript received from Rev.ai');
         }
         
-        console.log(`Successfully updated transcription ${transcriptionId} with transcript`);
-        return NextResponse.json({ success: true });
-      } catch (error) {
+        console.log(`Updating transcription ${transcriptionId} with transcript (${transcriptText.length} chars)`);
+        
+        // Update the transcription record with retry logic
+        try {
+          await retryOperation(async () => {
+            const { error } = await supabaseAdmin!
+              .from('transcriptions')
+              .update({
+                status: 'completed',
+                transcription_text: transcriptText,
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', transcriptionId);
+              
+            if (error) throw error;
+            return true;
+          }, 3, 1000);
+          
+          console.log(`Successfully updated transcription ${transcriptionId} with transcript`);
+          
+          // Verify the update was successful
+          const { data: verifyData, error: verifyError } = await supabaseAdmin!
+            .from('transcriptions')
+            .select('status, transcription_text')
+            .eq('id', transcriptionId)
+            .single();
+            
+          if (verifyError) {
+            console.error('Error verifying transcription update:', verifyError);
+          } else if (verifyData.status !== 'completed' || !verifyData.transcription_text) {
+            console.error('Verification failed: Transcription not properly updated');
+            console.log('Verification data:', verifyData);
+          } else {
+            console.log('Verification successful: Transcription properly updated');
+          }
+          
+          return NextResponse.json({ success: true } as SuccessResponse);
+        } catch (updateError: any) {
+          console.error('Error updating transcription after retries:', updateError);
+          throw updateError;
+        }
+      } catch (error: any) {
         console.error('Error processing completed transcription:', error);
         
         // Update the record with the error
-        await supabaseAdmin
-          .from('transcriptions')
-          .update({
-            status: 'error',
-            error: error instanceof Error ? error.message : String(error),
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', transcriptionId);
+        try {
+          await supabaseAdmin!
+            .from('transcriptions')
+            .update({
+              status: 'error',
+              error: error instanceof Error ? error.message : String(error),
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', transcriptionId);
+        } catch (errorUpdateError: any) {
+          console.error('Failed to update transcription with error status:', errorUpdateError);
+        }
           
-        return NextResponse.json({ error: 'Error processing completed transcription' }, { status: 500 });
+        return NextResponse.json({ 
+          success: false, 
+          error: 'Error processing completed transcription',
+          details: error instanceof Error ? error.message : String(error)
+        } as ErrorResponse, { status: 500 });
       }
     } else if (status === 'failed') {
       // If the job failed, update the database with the error
       console.log(`Rev AI job ${jobId} failed`);
       
-      const { error: updateError } = await supabaseAdmin
-        .from('transcriptions')
-        .update({
-          status: 'error',
-          error: payload.job?.failure || 'Rev AI job failed',
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', transcriptionId);
+      try {
+        await retryOperation(async () => {
+          const { error } = await supabaseAdmin!
+            .from('transcriptions')
+            .update({
+              status: 'error',
+              error: payload.job?.failure || 'Rev AI job failed',
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', transcriptionId);
+            
+          if (error) throw error;
+          return true;
+        }, 3, 1000);
         
-      if (updateError) {
-        console.error('Error updating transcription with failure:', updateError);
-        return NextResponse.json({ error: 'Error updating transcription with failure' }, { status: 500 });
+        console.log(`Successfully updated transcription ${transcriptionId} with failure status`);
+        return NextResponse.json({ success: true } as SuccessResponse);
+      } catch (updateError: any) { 
+        console.error('Error updating transcription with failure after retries:', updateError);
+        return NextResponse.json({ 
+          success: false, 
+          error: 'Error updating transcription with failure',
+          details: String(updateError)
+        } as ErrorResponse, { status: 500 });
       }
-      
-      return NextResponse.json({ success: true });
     } else {
       // For other statuses, just log and acknowledge
       console.log(`Rev AI job ${jobId} status: ${status}`);
-      return NextResponse.json({ success: true });
+      return NextResponse.json({ success: true } as SuccessResponse);
     }
-  } catch (error) {
+  } catch (error: any) { 
     console.error('Error processing Rev AI webhook:', error);
-    return NextResponse.json({ error: 'Error processing webhook' }, { status: 500 });
+    return NextResponse.json({ 
+      success: false, 
+      error: 'Error processing webhook',
+      details: error instanceof Error ? error.message : String(error)
+    } as ErrorResponse, { status: 500 });
   }
 }
