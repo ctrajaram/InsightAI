@@ -480,30 +480,58 @@ export async function POST(request: NextRequest) {
       const analysisDataString = JSON.stringify(analysisData);
       console.log('Processed analysis data:', analysisDataString);
       
-      // Update the database with the analysis
+      // Update transcription record with analysis data
       try {
         await retryOperation(async () => {
           const { error } = await supabase
             .from('transcriptions')
             .update({
-              analysis_status: 'completed',
               analysis_data: analysisData,
+              analysis_status: 'completed', // Explicitly set status to completed
               updated_at: new Date().toISOString()
             })
             .eq('id', transcriptionId);
           
           if (error) {
-            console.error('Error updating analysis:', error);
+            console.error('Error updating transcription with analysis:', error);
             throw error;
           }
         });
         
         console.log('Successfully updated transcription with analysis');
-      } catch (updateError) {
-        console.error('Failed to update transcription with analysis after multiple retries:', updateError);
         
-        // Even though the database update failed, we can still return the analysis to the client
-        console.log('Returning analysis to client despite database update failure');
+        // Verify the update was successful
+        const { data: verifyData, error: verifyError } = await supabase
+          .from('transcriptions')
+          .select('id, analysis_status, analysis_data')
+          .eq('id', transcriptionId)
+          .single();
+          
+        if (verifyError) {
+          console.error('Error verifying analysis update:', verifyError);
+        } else {
+          console.log('Verified analysis status:', verifyData.analysis_status);
+          
+          // If status is still not completed, try one more direct update
+          if (verifyData.analysis_status !== 'completed') {
+            console.log('Analysis status not showing as completed, attempting direct update...');
+            
+            const { error: directUpdateError } = await supabase
+              .from('transcriptions')
+              .update({
+                analysis_status: 'completed'
+              })
+              .eq('id', transcriptionId);
+              
+            if (directUpdateError) {
+              console.error('Direct update of analysis status failed:', directUpdateError);
+            } else {
+              console.log('Direct update of analysis status successful');
+            }
+          }
+        }
+      } catch (updateError) {
+        console.error('Failed to update transcription with analysis:', updateError);
       }
       
       // Return the success response with analysis

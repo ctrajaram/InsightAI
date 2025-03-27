@@ -3,11 +3,25 @@ export const fetchCache = "force-no-store";
 import { createClient } from '@supabase/supabase-js';
 import { NextRequest, NextResponse } from 'next/server';
 
-// Create a standard Supabase client without relying on cookies
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
+// Initialize environment variables
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+
+// Declare Supabase client variable but don't initialize it yet
+let supabase: ReturnType<typeof createClient> | null = null;
+
+// Only initialize if we have the necessary environment variables
+// This prevents errors during build time when env vars aren't available
+if (typeof window === 'undefined' && supabaseUrl && supabaseAnonKey) {
+  try {
+    // Create Supabase client without relying on cookies
+    supabase = createClient(supabaseUrl, supabaseAnonKey);
+    console.log('Transcription Status API: Supabase client initialized successfully');
+  } catch (error) {
+    console.error('Failed to initialize Supabase client:', error);
+    supabase = null;
+  }
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -32,6 +46,9 @@ export async function GET(request: NextRequest) {
     }
     
     // Verify the token with Supabase
+    if (!supabase) {
+      throw new Error('Supabase client is not initialized');
+    }
     const { data: { user }, error: authError } = await supabase.auth.getUser(accessToken);
     
     if (authError || !user) {

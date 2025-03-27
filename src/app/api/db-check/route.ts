@@ -2,14 +2,36 @@ import { createClient } from '@supabase/supabase-js';
 import { NextRequest, NextResponse } from 'next/server';
 import { v4 as uuidv4 } from 'uuid';
 
-// Create a standard Supabase client for testing
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
+// Initialize environment variables
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+
+// Declare Supabase client variable but don't initialize it yet
+let supabase: ReturnType<typeof createClient> | null = null;
+
+// Only initialize if we have the necessary environment variables
+// This prevents errors during build time when env vars aren't available
+if (typeof window === 'undefined' && supabaseUrl && supabaseAnonKey) {
+  try {
+    // Create Supabase client without relying on cookies
+    supabase = createClient(supabaseUrl, supabaseAnonKey);
+    console.log('DB Check API: Supabase client initialized successfully');
+  } catch (error) {
+    console.error('Failed to initialize Supabase client:', error);
+    supabase = null;
+  }
+}
 
 export async function GET(request: NextRequest) {
   try {
+    // Check if Supabase client is initialized
+    if (!supabase) {
+      return NextResponse.json({
+        status: 'error',
+        message: 'Supabase client not initialized'
+      }, { status: 500 });
+    }
+    
     // Check table structure
     const { data: tableInfo, error: tableError } = await supabase
       .from('transcriptions')
@@ -83,4 +105,4 @@ export async function GET(request: NextRequest) {
       error
     }, { status: 500 });
   }
-} 
+}

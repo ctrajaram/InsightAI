@@ -59,7 +59,7 @@ export function AudioTranscriber() {
         <CardHeader>
           <CardTitle>AI Audio Transcription</CardTitle>
           <CardDescription>
-            Upload an audio file to transcribe with OpenAI Whisper
+            Upload an audio file to transcribe with Rev.ai
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">

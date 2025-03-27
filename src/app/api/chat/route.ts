@@ -1,12 +1,30 @@
-import { OpenAI } from 'openai';
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { mapDbRecordToTranscriptionRecord } from '@/lib/media-storage';
+import OpenAI from 'openai';
 
-// Initialize OpenAI client
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+// Initialize environment variables
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+const openaiApiKey = process.env.OPENAI_API_KEY || '';
+
+// Declare OpenAI client variable but don't initialize it yet
+let openaiClient: OpenAI | null = null;
+
+// Only initialize if we have the necessary environment variables
+// This prevents errors during build time when env vars aren't available
+if (typeof window === 'undefined' && openaiApiKey) {
+  try {
+    // Create OpenAI client
+    openaiClient = new OpenAI({
+      apiKey: openaiApiKey,
+    });
+    console.log('Chat API: OpenAI client initialized successfully');
+  } catch (error) {
+    console.error('Failed to initialize OpenAI client:', error);
+    openaiClient = null;
+  }
+}
 
 export async function POST(req: Request) {
   try {
@@ -38,8 +56,8 @@ export async function POST(req: Request) {
     
     // Create a Supabase client with the user's access token
     const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      supabaseUrl,
+      supabaseAnonKey,
       {
         global: {
           headers: {
@@ -270,8 +288,16 @@ Help the user understand the interview data by answering their questions about t
     
     console.log('Sending formatted messages to OpenAI:', JSON.stringify(formattedMessages.slice(0, 2)));
     
+    // Check if OpenAI client is initialized
+    if (!openaiClient) {
+      return NextResponse.json({ 
+        error: 'OpenAI client not initialized',
+        success: false
+      }, { status: 500 });
+    }
+    
     // Call the OpenAI API
-    const response = await openai.chat.completions.create({
+    const response = await openaiClient.chat.completions.create({
       model: 'gpt-4',
       messages: formattedMessages,
       temperature: 0.7,

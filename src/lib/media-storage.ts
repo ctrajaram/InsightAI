@@ -25,6 +25,7 @@ export interface TranscriptionRecord {
   summaryText?: string;
   summaryStatus?: 'pending' | 'processing' | 'completed' | 'error';
   analysisStatus?: 'pending' | 'processing' | 'completed' | 'error';
+  isPlaceholderSummary?: boolean;
   analysisData?: {
     sentiment: 'positive' | 'neutral' | 'negative';
     sentiment_explanation: string;
@@ -61,6 +62,11 @@ export interface TranscriptionRecord {
  * Maps database record (snake_case) to TranscriptionRecord interface (camelCase)
  */
 export function mapDbRecordToTranscriptionRecord(dbRecord: any): TranscriptionRecord {
+  // Determine if this is likely a placeholder summary based on the text content
+  const summaryText = dbRecord.summary_text || '';
+  const isPlaceholderSummary = summaryText.includes('processing message') || 
+                              summaryText.includes('wait for the complete transcription');
+  
   return {
     id: dbRecord.id,
     mediaPath: dbRecord.media_path,
@@ -70,6 +76,7 @@ export function mapDbRecordToTranscriptionRecord(dbRecord: any): TranscriptionRe
     summaryStatus: dbRecord.summary_status,
     analysisStatus: dbRecord.analysis_status,
     analysisData: dbRecord.analysis_data,
+    isPlaceholderSummary: isPlaceholderSummary,
     createdAt: dbRecord.created_at,
     fileName: dbRecord.file_name,
     fileSize: dbRecord.file_size,
@@ -210,6 +217,7 @@ export async function createTranscriptionRecord(
   fileInfo: UploadedFileInfo,
   userId: string
 ): Promise<TranscriptionRecord> {
+  // Use the browser client for normal operations
   const supabase = createSupabaseBrowserClient();
   
   const newRecord = {
@@ -236,56 +244,83 @@ export async function createTranscriptionRecord(
   
   while (attempts < 3) {
     attempts++;
-    const result = await supabase
-      .from('transcriptions')
-      .insert(newRecord)
-      .select()
-      .single();
     
-    data = result.data;
-    error = result.error;
-    
-    if (!error) break;
-    
-    console.error(`Attempt ${attempts} failed:`, error.message);
-    
-    if (attempts < 3) {
-      // Wait a bit before retrying
-      await new Promise(resolve => setTimeout(resolve, 500));
-      console.log(`Retrying... (attempt ${attempts + 1})`);
+    try {
+      // Get the current session to retrieve the access token
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (!session || !session.access_token) {
+        throw new Error('Authentication required. Please sign in and try again.');
+      }
+      
+      // First try using the API endpoint that uses service role key on the server
+      // This approach is more likely to succeed due to service role permissions
+      console.log('Attempting to create record via API endpoint first...');
+      const response = await fetch('/api/transcription/create', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify(newRecord)
+      });
+      
+      if (response.ok) {
+        data = await response.json();
+        error = null;
+        console.log('Successfully created record via API endpoint');
+        break;
+      }
+      
+      // If API endpoint fails, try with the regular client as fallback
+      console.log('API endpoint attempt failed, trying direct database access...');
+      const result = await supabase
+        .from('transcriptions')
+        .insert(newRecord)
+        .select()
+        .single();
+      
+      data = result.data;
+      error = result.error;
+      
+      // If we get an RLS policy error, log it and retry with backoff
+      if (error && (error.code === '42501' || error.message.includes('policy'))) {
+        console.log('Row-level security policy violation detected:', error.message);
+        console.error(`Attempt ${attempts} failed:`, error.message);
+        
+        // Wait before retrying
+        await new Promise(resolve => setTimeout(resolve, 1000 * attempts));
+        continue;
+      }
+      
+      if (!error) break;
+      
+      console.error(`Attempt ${attempts} failed:`, error.message);
+      
+      // Wait before retrying
+      await new Promise(resolve => setTimeout(resolve, 1000 * attempts));
+    } catch (e: any) {
+      console.error(`Attempt ${attempts} failed with exception:`, e);
+      error = e;
+      
+      // Wait before retrying
+      await new Promise(resolve => setTimeout(resolve, 1000 * attempts));
     }
   }
   
   if (error) {
     console.error('All attempts to create transcription record failed:', error);
-    
-    // Get table structure to help diagnose the issue
-    const { data: tableInfo } = await supabase
-      .from('transcriptions')
-      .select('*')
-      .limit(1);
-    
-    console.log('Table structure sample:', tableInfo);
-    
-    throw new Error(`Failed to create transcription record: ${error.message}`);
+    throw new Error(`Failed to create transcription record: ${error.message || String(error)}`);
   }
   
-  console.log('Transcription record created in database:', data);
-  
-  // Verify the record was created
-  const { data: verifyData, error: verifyError } = await supabase
-    .from('transcriptions')
-    .select('id')
-    .eq('id', newRecord.id)
-    .single();
-  
-  if (verifyError) {
-    console.error('Record created but failed verification:', verifyError);
-  } else {
-    console.log('Record verified in database:', verifyData);
+  if (!data) {
+    console.error('No data returned from create operation');
+    throw new Error('Failed to create transcription record: No data returned');
   }
   
-  // Map database field names to our TypeScript interface
+  console.log('Successfully created transcription record');
+  
+  // Map the database record to our TranscriptionRecord interface
   return mapDbRecordToTranscriptionRecord(data);
 }
 
