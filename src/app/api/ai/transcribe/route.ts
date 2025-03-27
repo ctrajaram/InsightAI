@@ -12,11 +12,25 @@ export const config = {
   },
 };
 
-// Create a Supabase client for authentication
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-  process.env.SUPABASE_SERVICE_KEY || ''
-);
+// Initialize environment variables
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+
+// Declare Supabase client variable but don't initialize it yet
+let supabase: ReturnType<typeof createClient> | null = null;
+
+// Only initialize if we have the necessary environment variables
+// This prevents errors during build time when env vars aren't available
+if (typeof window === 'undefined' && supabaseUrl && supabaseKey) {
+  try {
+    // Create Supabase client without relying on cookies
+    supabase = createClient(supabaseUrl, supabaseKey);
+    console.log('AI Transcribe API: Supabase client initialized successfully');
+  } catch (error) {
+    console.error('Failed to initialize Supabase client:', error);
+    supabase = null;
+  }
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -40,6 +54,19 @@ export async function POST(req: NextRequest) {
     }
     
     // Verify the token with Supabase
+    if (!supabase) {
+      return new Response(
+        JSON.stringify({ 
+          success: false,
+          error: 'Supabase client not initialized' 
+        }), 
+        { 
+          status: 500,
+          headers: { 'Content-Type': 'application/json' }
+        }
+      );
+    }
+    
     const { data: { user }, error: authError } = await supabase.auth.getUser(accessToken);
 
     if (authError || !user) {
@@ -79,7 +106,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Check if Rev.ai API key is configured
-    const revAiApiKey = process.env.REV_AI_API_KEY;
+    const revAiApiKey = typeof window === 'undefined' ? process.env.REV_AI_API_KEY || '' : '';
     if (!revAiApiKey) {
       return new Response(
         JSON.stringify({

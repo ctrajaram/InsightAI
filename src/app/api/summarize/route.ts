@@ -41,9 +41,22 @@ if (supabaseUrl && (serviceRoleKey || anonKey)) {
 }
 
 // OpenAI client
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+let openai: OpenAI | null = null;
+
+// Initialize OpenAI client if we have the necessary environment variables
+if (typeof window === 'undefined' && process.env.OPENAI_API_KEY) {
+  try {
+    openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    });
+    console.log('Summarize API: OpenAI client initialized successfully');
+  } catch (error) {
+    console.error('Failed to initialize OpenAI client:', error);
+    openai = null;
+  }
+} else if (!process.env.OPENAI_API_KEY) {
+  console.warn('Summarize API: Missing OPENAI_API_KEY environment variable');
+}
 
 // Helper function to wait for a specified time
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -577,6 +590,15 @@ export async function POST(request: NextRequest) {
     const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minute timeout
     
     try {
+      // Check if OpenAI client is initialized
+      if (!openai) {
+        console.error('OpenAI client not initialized');
+        return NextResponse.json({ 
+          success: false, 
+          error: 'Server configuration error: AI client not initialized' 
+        }, { status: 500 });
+      }
+      
       // Call OpenAI for summarization
       let completion;
       let modelUsed = "gpt-4";

@@ -96,7 +96,7 @@ async function retryWithExponentialBackoff<T>(
 }
 
 // Rev.ai API configuration
-const REV_AI_API_KEY = process.env.REV_AI_API_KEY;
+const REV_AI_API_KEY = typeof window === 'undefined' ? process.env.REV_AI_API_KEY || '' : '';
 const REV_AI_BASE_URL = 'https://api.rev.ai/speechtotext/v1';
 
 // Maximum file size allowed (400MB)

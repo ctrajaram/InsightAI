@@ -1,11 +1,43 @@
-import { NextResponse } from 'next/server';
 import OpenAI from 'openai';
 import { createClient } from '@supabase/supabase-js';
+import { NextResponse } from 'next/server';
 
-// Initialize OpenAI client
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+// Initialize environment variables
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const openaiApiKey = process.env.OPENAI_API_KEY || '';
+
+// Declare client variables but don't initialize them yet
+let openai: OpenAI | null = null;
+let supabase: ReturnType<typeof createClient> | null = null;
+
+// Only initialize if we have the necessary environment variables
+// This prevents errors during build time when env vars aren't available
+if (typeof window === 'undefined') {
+  // Initialize OpenAI client
+  if (openaiApiKey) {
+    try {
+      openai = new OpenAI({
+        apiKey: openaiApiKey,
+      });
+      console.log('Analysis API: OpenAI client initialized successfully');
+    } catch (error) {
+      console.error('Failed to initialize OpenAI client:', error);
+      openai = null;
+    }
+  }
+  
+  // Initialize Supabase client
+  if (supabaseUrl && supabaseServiceRoleKey) {
+    try {
+      supabase = createClient(supabaseUrl, supabaseServiceRoleKey);
+      console.log('Analysis API: Supabase client initialized successfully');
+    } catch (error) {
+      console.error('Failed to initialize Supabase client:', error);
+      supabase = null;
+    }
+  }
+}
 
 // Set a longer timeout for this route (5 minutes)
 export const maxDuration = 300; // 5 minutes in seconds (maximum allowed on Vercel Pro plan)
@@ -115,47 +147,28 @@ export async function POST(req: Request) {
     }
     
     // Initialize Supabase clients
-    let supabase: ReturnType<typeof createClient> | null = null;
     let supabaseAdmin: ReturnType<typeof createClient> | null = null;
     
     try {
-      // Initialize Supabase client with user token if provided
-      if (accessToken && process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
-        console.log('Analysis API: Using user token for authentication');
-        supabase = createClient(
-          process.env.NEXT_PUBLIC_SUPABASE_URL,
-          process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
-          {
-            global: { headers: { Authorization: `Bearer ${accessToken}` } },
-          }
-        );
-      } else if (process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
-        console.log('Analysis API: Using anon key for regular client');
-        supabase = createClient(
-          process.env.NEXT_PUBLIC_SUPABASE_URL,
-          process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-        );
-      }
-      
-      // Only initialize admin client if service role key is available
-      if (process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      // Initialize Supabase admin client
+      if (supabaseUrl && supabaseServiceRoleKey) {
         console.log('Analysis API: Using service role key for admin client');
         supabaseAdmin = createClient(
-          process.env.NEXT_PUBLIC_SUPABASE_URL,
-          process.env.SUPABASE_SERVICE_ROLE_KEY
+          supabaseUrl,
+          supabaseServiceRoleKey
         );
       }
     } catch (error) {
-      console.error('Error initializing Supabase clients:', error);
+      console.error('Error initializing Supabase admin client:', error);
       return NextResponse.json({ 
         success: false, 
         error: 'Failed to initialize database connection' 
       }, { status: 500 });
     }
     
-    // Check if Supabase clients were initialized
-    if (!supabase || !supabaseAdmin) {
-      console.error('Supabase clients not initialized due to missing environment variables');
+    // Check if Supabase admin client was initialized
+    if (!supabaseAdmin) {
+      console.error('Supabase admin client not initialized due to missing environment variables');
       return NextResponse.json({ 
         success: false, 
         error: 'Server configuration error: Database client not initialized' 
@@ -275,62 +288,59 @@ export async function POST(req: Request) {
       });
     }
 
-    // Prepare the prompt for OpenAI
-    const systemPrompt = `
-      You are an AI assistant specializing in analyzing interview transcripts. The user will provide a transcript from a recorded conversation or interview.
+    // Perform analysis with OpenAI
+    try {
+      console.log('Analysis API: Starting analysis with OpenAI');
       
-      Please analyze the transcript and provide a response in JSON format with the following structure:
-      {
-        "topics": ["List of main topics discussed"],
-        "keyInsights": ["List of key insights from the conversation"],
-        "actionItems": ["List of action items or next steps mentioned"],
-        "sentiment": "Overall sentiment of the conversation (positive, negative, neutral, or mixed)",
-        "toneAnalysis": "Brief analysis of the tone and style of communication",
-        "questions": ["Important questions raised during the conversation"],
-        "pain_points": ["List of pain points or challenges mentioned"],
-        "feature_requests": ["List of feature requests or suggestions mentioned"],
-        "sentiment_explanation": "Explanation of the sentiment detected"
+      // Check if OpenAI client is initialized
+      if (!openai) {
+        console.error('OpenAI client not initialized');
+        return NextResponse.json({ 
+          success: false, 
+          error: 'Server configuration error: AI client not initialized' 
+        }, { status: 500 });
       }
       
-      IMPORTANT GUIDELINES:
-      1. Focus on the actual content of the conversation, not the format or structure of the transcript.
-      2. Do NOT comment on the quality, coherence, or structure of the transcript itself.
-      3. Assume the transcript is from a real conversation even if it seems disjointed - focus on extracting meaning rather than critiquing the transcript.
-      4. Be factual and objective in your analysis, based solely on the content provided.
-      5. If a category doesn't apply (e.g., no action items mentioned), provide an empty array for that category.
-      
-      Keep your analysis factual, concise, and directly based on content from the transcript.
-    `;
+      // Prepare the prompt for OpenAI
+      const systemPrompt = `
+        You are an AI assistant specializing in analyzing interview transcripts. The user will provide a transcript from a recorded conversation or interview.
+        
+        Please analyze the transcript and provide a response in JSON format with the following structure:
+        {
+          "topics": ["List of main topics discussed"],
+          "keyInsights": ["List of key insights from the conversation"],
+          "actionItems": ["List of action items or next steps mentioned"],
+          "sentiment": "Overall sentiment of the conversation (positive, negative, neutral, or mixed)",
+          "toneAnalysis": "Brief analysis of the tone and style of communication",
+          "questions": ["Important questions raised during the conversation"],
+          "pain_points": ["List of pain points or challenges mentioned"],
+          "feature_requests": ["List of feature requests or suggestions mentioned"],
+          "sentiment_explanation": "Explanation of the sentiment detected"
+        }
+        
+        IMPORTANT GUIDELINES:
+        1. Focus on the actual content of the conversation, not the format or structure of the transcript.
+        2. Do NOT comment on the quality, coherence, or structure of the transcript itself.
+        3. Assume the transcript is from a real conversation even if it seems disjointed - focus on extracting meaning rather than critiquing the transcript.
+        4. Be factual and objective in your analysis, based solely on the content provided.
+        5. If a category doesn't apply (e.g., no action items mentioned), provide an empty array for that category.
+        
+        Keep your analysis factual, concise, and directly based on content from the transcript.
+      `;
 
-    // Call OpenAI API with optimized parameters
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minute timeout
-    
-    try {
-      // Call OpenAI for analysis
-      let completion;
-      let modelUsed = "gpt-4";
+      // Call OpenAI API with optimized parameters
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minute timeout
       
       try {
-        // Try with GPT-4 first
-        completion = await openai.chat.completions.create({
-          model: "gpt-4",
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: `Please analyze the following transcript:\n\n${textToAnalyze}` }
-          ],
-          temperature: 0.3,
-          max_tokens: 1000
-        }, { signal: controller.signal });
-      } catch (error: any) {
-        // Check if this is a rate limit error
-        if (error.status === 429 || (error.message && error.message.includes('rate limit'))) {
-          console.log('Rate limit reached for GPT-4, falling back to GPT-3.5-turbo');
-          
-          // Fall back to GPT-3.5-turbo
-          modelUsed = "gpt-3.5-turbo";
+        // Call OpenAI for analysis
+        let completion;
+        let modelUsed = "gpt-4";
+        
+        try {
+          // Try with GPT-4 first
           completion = await openai.chat.completions.create({
-            model: "gpt-3.5-turbo",
+            model: "gpt-4",
             messages: [
               { role: "system", content: systemPrompt },
               { role: "user", content: `Please analyze the following transcript:\n\n${textToAnalyze}` }
@@ -338,119 +348,143 @@ export async function POST(req: Request) {
             temperature: 0.3,
             max_tokens: 1000
           }, { signal: controller.signal });
-        } else {
-          // Re-throw other errors
-          throw error;
-        }
-      }
-      
-      // Clear the timeout
-      clearTimeout(timeoutId);
-      
-      // Process the response
-      const responseContent = completion.choices[0]?.message?.content || '';
-      console.log(`Raw response from OpenAI (${modelUsed}):`, responseContent.substring(0, 200) + '...');
-      let analysisData;
-
-      try {
-        // First attempt: Direct JSON parsing
-        analysisData = JSON.parse(responseContent || '{}');
-        console.log('Successfully parsed analysis data');
-      } catch (e) {
-        console.error('Error parsing OpenAI response as JSON:', e);
-        
-        // Second attempt: Extract JSON from non-JSON response
-        try {
-          const jsonMatch = responseContent?.match(/\{[\s\S]*\}/);
-          if (jsonMatch && jsonMatch[0]) {
-            analysisData = JSON.parse(jsonMatch[0]);
-            console.log('Successfully extracted and parsed JSON from response');
+        } catch (error: any) {
+          // Check if this is a rate limit error
+          if (error.status === 429 || (error.message && error.message.includes('rate limit'))) {
+            console.log('Rate limit reached for GPT-4, falling back to GPT-3.5-turbo');
+            
+            // Fall back to GPT-3.5-turbo
+            modelUsed = "gpt-3.5-turbo";
+            completion = await openai.chat.completions.create({
+              model: "gpt-3.5-turbo",
+              messages: [
+                { role: "system", content: systemPrompt },
+                { role: "user", content: `Please analyze the following transcript:\n\n${textToAnalyze}` }
+              ],
+              temperature: 0.3,
+              max_tokens: 1000
+            }, { signal: controller.signal });
           } else {
-            // Third attempt: Check if this is an error or apology response
-            if (responseContent?.includes("I'm sorry") || 
-                responseContent?.includes("can't provide") || 
-                responseContent?.includes("no transcript")) {
-              
-              console.log('Detected OpenAI error/apology response, creating fallback structure');
-              analysisData = {
-                sentiment: 'neutral',
-                sentiment_explanation: 'Analysis could not be completed',
-                pain_points: [],
-                feature_requests: [],
-                topics: [],
-                key_insights: [],
-                error: responseContent?.substring(0, 500) || 'Failed to analyze transcript'
-              };
-            } else {
-              throw new Error('Could not extract JSON from response');
-            }
+            // Re-throw other errors
+            throw error;
           }
-        } catch (extractError) {
-          console.error('Failed to extract JSON from response:', extractError);
-          
-          // Final fallback: Create a minimal valid structure
-          analysisData = {
-            sentiment: 'neutral',
-            sentiment_explanation: 'Analysis could not be completed due to parsing error',
-            pain_points: [],
-            feature_requests: [],
-            topics: [],
-            key_insights: [],
-            error: 'Failed to parse analysis results'
-          };
         }
-      }
+        
+        // Clear the timeout
+        clearTimeout(timeoutId);
+        
+        // Process the response
+        const responseContent = completion.choices[0]?.message?.content || '';
+        console.log(`Raw response from OpenAI (${modelUsed}):`, responseContent.substring(0, 200) + '...');
+        let analysisData;
 
-      // Ensure the analysis data has the required structure
-      analysisData = {
-        sentiment: analysisData.sentiment || 'neutral',
-        sentiment_explanation: analysisData.sentiment_explanation || 'No explanation provided',
-        pain_points: Array.isArray(analysisData.pain_points) ? analysisData.pain_points : [],
-        feature_requests: Array.isArray(analysisData.feature_requests) ? analysisData.feature_requests : [],
-        topics: Array.isArray(analysisData.topics) ? analysisData.topics : [],
-        key_insights: Array.isArray(analysisData.key_insights) ? analysisData.key_insights : []
-      };
+        try {
+          // First attempt: Direct JSON parsing
+          analysisData = JSON.parse(responseContent || '{}');
+          console.log('Successfully parsed analysis data');
+        } catch (e) {
+          console.error('Error parsing OpenAI response as JSON:', e);
+          
+          // Second attempt: Extract JSON from non-JSON response
+          try {
+            const jsonMatch = responseContent?.match(/\{[\s\S]*\}/);
+            if (jsonMatch && jsonMatch[0]) {
+              analysisData = JSON.parse(jsonMatch[0]);
+              console.log('Successfully extracted and parsed JSON from response');
+            } else {
+              // Third attempt: Check if this is an error or apology response
+              if (responseContent?.includes("I'm sorry") || 
+                  responseContent?.includes("can't provide") || 
+                  responseContent?.includes("no transcript")) {
+                
+                console.log('Detected OpenAI error/apology response, creating fallback structure');
+                analysisData = {
+                  sentiment: 'neutral',
+                  sentiment_explanation: 'Analysis could not be completed',
+                  pain_points: [],
+                  feature_requests: [],
+                  topics: [],
+                  key_insights: [],
+                  error: responseContent?.substring(0, 500) || 'Failed to analyze transcript'
+                };
+              } else {
+                throw new Error('Could not extract JSON from response');
+              }
+            }
+          } catch (extractError) {
+            console.error('Failed to extract JSON from response:', extractError);
+            
+            // Final fallback: Create a minimal valid structure
+            analysisData = {
+              sentiment: 'neutral',
+              sentiment_explanation: 'Analysis could not be completed due to parsing error',
+              pain_points: [],
+              feature_requests: [],
+              topics: [],
+              key_insights: [],
+              error: 'Failed to parse analysis results'
+            };
+          }
+        }
 
-      // Update transcription record with analysis data - use field names from the database
-      console.log('Updating transcription record with analysis data...');
-      const { error: updateError } = await supabaseAdmin
-        .from('transcriptions')
-        .update({
-          analysis_data: analysisData,
-          analysis_status: 'completed',
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', transcriptionId);
+        // Ensure the analysis data has the required structure
+        analysisData = {
+          sentiment: analysisData.sentiment || 'neutral',
+          sentiment_explanation: analysisData.sentiment_explanation || 'No explanation provided',
+          pain_points: Array.isArray(analysisData.pain_points) ? analysisData.pain_points : [],
+          feature_requests: Array.isArray(analysisData.feature_requests) ? analysisData.feature_requests : [],
+          topics: Array.isArray(analysisData.topics) ? analysisData.topics : [],
+          key_insights: Array.isArray(analysisData.key_insights) ? analysisData.key_insights : []
+        };
 
-      if (updateError) {
-        console.error('Error updating transcription with analysis:', updateError);
+        // Update transcription record with analysis data - use field names from the database
+        console.log('Updating transcription record with analysis data...');
+        const { error: updateError } = await supabaseAdmin
+          .from('transcriptions')
+          .update({
+            analysis_data: analysisData,
+            analysis_status: 'completed',
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', transcriptionId);
+
+        if (updateError) {
+          console.error('Error updating transcription with analysis:', updateError);
+          return NextResponse.json({ 
+            success: false, 
+            error: 'Failed to save analysis results',
+            details: updateError.message 
+          }, { status: 500 });
+        }
+
+        // Double-check that the record was updated correctly
+        const { data: updatedRecord, error: checkError } = await supabaseAdmin
+          .from('transcriptions')
+          .select('id, analysis_status, analysis_data')
+          .eq('id', transcriptionId)
+          .single();
+          
+        if (checkError) {
+          console.error('Error verifying update:', checkError);
+        } else {
+          console.log('Verified update. Analysis status:', updatedRecord.analysis_status);
+          console.log('Analysis data present:', !!updatedRecord.analysis_data);
+        }
+
+        console.log('Analysis completed and saved successfully');
         return NextResponse.json({ 
-          success: false, 
-          error: 'Failed to save analysis results',
-          details: updateError.message 
+          success: true,
+          analysis: analysisData
+        });
+
+      } catch (error: any) {
+        console.error('Unexpected error in analysis API:', error);
+        return NextResponse.json({ 
+          error: 'Analysis failed',
+          message: error.message || 'An unexpected error occurred',
+          stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
         }, { status: 500 });
       }
-
-      // Double-check that the record was updated correctly
-      const { data: updatedRecord, error: checkError } = await supabase
-        .from('transcriptions')
-        .select('id, analysis_status, analysis_data')
-        .eq('id', transcriptionId)
-        .single();
-        
-      if (checkError) {
-        console.error('Error verifying update:', checkError);
-      } else {
-        console.log('Verified update. Analysis status:', updatedRecord.analysis_status);
-        console.log('Analysis data present:', !!updatedRecord.analysis_data);
-      }
-
-      console.log('Analysis completed and saved successfully');
-      return NextResponse.json({ 
-        success: true,
-        analysis: analysisData
-      });
-
     } catch (error: any) {
       console.error('Unexpected error in analysis API:', error);
       return NextResponse.json({ 
