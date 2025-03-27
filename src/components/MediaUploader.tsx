@@ -2024,40 +2024,57 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
 
   useEffect(() => {
     const autoProcessTranscription = async () => {
-      if (transcriptionRecord?.id && transcriptionRecord?.transcriptionText) {
-        // Check authentication first
-        const { data: { session } } = await supabase.auth.getSession();
-        if (!session) {
-          console.log('Authentication required for auto-processing - user is not logged in');
-          return; // Exit early without error if not authenticated
-        }
-        
-        // Auto-generate summary if it's not already summarized or in progress
-        if (transcriptionRecord.summaryStatus !== 'completed' && 
-            transcriptionRecord.summaryStatus !== 'processing') {
-          try {
-            await generateSummaryForTranscription(transcriptionRecord.id, transcriptionRecord.transcriptionText);
-          } catch (error) {
-            console.error('Auto-summary generation failed:', error);
-          }
-        }
-        
-        // Auto-analyze sentiment if it's not already analyzed or in progress
-        if (transcriptionRecord.analysisStatus !== 'completed' && 
-            transcriptionRecord.analysisStatus !== 'processing') {
-          try {
-            console.log('Auto-triggering analysis for transcription:', transcriptionRecord.id);
-            await requestAnalysis(transcriptionRecord.id);
-          } catch (error) {
-            console.error('Auto-sentiment analysis failed:', error);
-          }
+      // Skip if no transcription record or if it doesn't have both ID and text
+      if (!transcriptionRecord || !transcriptionRecord.id || !transcriptionRecord.transcriptionText) {
+        return;
+      }
+      
+      // Check authentication first
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        console.log('Authentication required for auto-processing - user is not logged in');
+        return; // Exit early without error if not authenticated
+      }
+      
+      // Auto-generate summary if it's not already summarized or in progress
+      if (transcriptionRecord.summaryStatus !== 'completed' && 
+          transcriptionRecord.summaryStatus !== 'processing') {
+        try {
+          console.log('Auto-triggering summary for transcription:', transcriptionRecord.id);
+          await generateSummaryForTranscription(transcriptionRecord.id, transcriptionRecord.transcriptionText);
+        } catch (error) {
+          console.error('Auto-summary generation failed:', error);
         }
       }
-    
+      
+      // Auto-analyze sentiment if it's not already analyzed or in progress
+      if (transcriptionRecord.analysisStatus !== 'completed' && 
+          transcriptionRecord.analysisStatus !== 'processing') {
+        try {
+          console.log('Auto-triggering analysis for transcription:', transcriptionRecord.id);
+          await requestAnalysis(transcriptionRecord.id);
+        } catch (error) {
+          console.error('Auto-sentiment analysis failed:', error);
+        }
+      }
     };
     
-    autoProcessTranscription();
-  }, [transcriptionRecord?.id, transcriptionRecord?.transcriptionText, generateSummaryForTranscription, requestAnalysis, supabase]);
+    // Only run if transcription record has changed and has valid data
+    if (transcriptionRecord && transcriptionRecord.id && transcriptionRecord.transcriptionText) {
+      autoProcessTranscription();
+    }
+    
+    // Explicitly list all external functions in the dependency array
+    // but exclude the transcriptionRecord.transcriptionText to prevent infinite loops
+  }, [
+    transcriptionRecord?.id, 
+    transcriptionRecord?.status,
+    transcriptionRecord?.summaryStatus,
+    transcriptionRecord?.analysisStatus,
+    generateSummaryForTranscription, 
+    requestAnalysis, 
+    supabase
+  ]);
 
   useEffect(() => {
     const checkAuth = async () => {
@@ -2374,8 +2391,9 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
 
   useEffect(() => {
     const autoGenerateWhenTranscriptionAvailable = async () => {
-      // Only proceed if we have a transcription record with text
-      if (!transcriptionRecord || !transcriptionRecord.transcriptionText) {
+      // Only proceed if we have a valid transcription record with ID and text
+      if (!transcriptionRecord || !transcriptionRecord.id || !transcriptionRecord.transcriptionText) {
+        console.log('Skipping auto-generation: Missing transcription ID or text');
         return;
       }
       
@@ -2385,10 +2403,10 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) {
         console.log('Authentication required for auto-generation - user is not logged in');
-        return;
+        return; // Exit early without error if not authenticated
       }
       
-      // Generate summary if needed
+      // Auto-generate summary if needed
       if ((!transcriptionRecord.summaryText || transcriptionRecord.isPlaceholderSummary) && 
           transcriptionRecord.summaryStatus !== 'processing') {
         console.log('Auto-generating summary for available transcription');
@@ -2402,7 +2420,7 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
         }
       }
       
-      // Generate analysis if needed
+      // Auto-generate analysis if needed
       if (!transcriptionRecord.analysisData && 
           transcriptionRecord.analysisStatus !== 'processing') {
         console.log('Auto-generating analysis for available transcription');
@@ -2414,8 +2432,22 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       }
     };
     
-    autoGenerateWhenTranscriptionAvailable();
-  }, [transcriptionRecord?.transcriptionText, transcriptionRecord?.id, supabase, generateSummaryForTranscription, requestAnalysis]);
+    // Only run the effect if we have a valid transcription record
+    if (transcriptionRecord && transcriptionRecord.id && transcriptionRecord.transcriptionText) {
+      autoGenerateWhenTranscriptionAvailable();
+    }
+    
+    // Explicitly list all external functions in the dependency array
+    // but exclude the transcriptionRecord.transcriptionText to prevent infinite loops
+  }, [
+    transcriptionRecord?.id, 
+    transcriptionRecord?.status,
+    transcriptionRecord?.summaryStatus,
+    transcriptionRecord?.analysisStatus,
+    generateSummaryForTranscription, 
+    requestAnalysis, 
+    supabase
+  ]);
 
   return (
     <div className="container mx-auto px-4 py-6 max-w-4xl">

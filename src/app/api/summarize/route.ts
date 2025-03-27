@@ -9,55 +9,35 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-// Check if required environment variables are set
-if (!supabaseUrl) {
-  console.error('NEXT_PUBLIC_SUPABASE_URL is not set');
-}
-
-if (!serviceRoleKey) {
-  console.warn('SUPABASE_SERVICE_ROLE_KEY is not set - falling back to anon key');
-}
-
-if (!anonKey && !serviceRoleKey) {
-  console.error('Neither SUPABASE_SERVICE_ROLE_KEY nor NEXT_PUBLIC_SUPABASE_ANON_KEY is set');
-}
-
 // Declare Supabase client variables but don't initialize them yet
 let supabase: ReturnType<typeof createClient> | null = null;
 let supabaseAdmin: ReturnType<typeof createClient> | null = null;
 
 // Only initialize if we have the necessary environment variables
 // This prevents errors during build time when env vars aren't available
-if (supabaseUrl) {
+if (supabaseUrl && (serviceRoleKey || anonKey)) {
   try {
     // Create Supabase client with anon key for regular operations
     if (anonKey) {
-      supabase = createClient(
-        supabaseUrl,
-        anonKey
-      );
+      supabase = createClient(supabaseUrl, anonKey);
+      console.log('Summarize API: Using anon key for regular client');
     }
     
     // Create Supabase admin client with service role key for bypassing RLS
-    if (serviceRoleKey || anonKey) {
-      supabaseAdmin = createClient(
-        supabaseUrl,
-        serviceRoleKey || anonKey || ''
-      );
+    if (serviceRoleKey) {
+      supabaseAdmin = createClient(supabaseUrl, serviceRoleKey);
+      console.log('Summarize API: Using service role key for admin client');
+    } else if (anonKey) {
+      supabaseAdmin = createClient(supabaseUrl, anonKey);
+      console.log('Summarize API: Using anon key for admin client (fallback)');
     }
   } catch (error) {
     console.error('Failed to initialize Supabase clients:', error);
     supabase = null;
     supabaseAdmin = null;
   }
-}
-
-// Log which keys we're using (without exposing the actual keys)
-if (supabase) {
-  console.log(`Summarize API: Using ${anonKey ? 'anon' : 'missing'} key for regular client`);
-}
-if (supabaseAdmin) {
-  console.log(`Summarize API: Using ${serviceRoleKey ? 'service role' : (anonKey ? 'anon' : 'missing')} key for admin client`);
+} else {
+  console.warn('Summarize API: Missing required environment variables for Supabase initialization');
 }
 
 // OpenAI client
@@ -770,7 +750,7 @@ export async function POST(request: NextRequest) {
               console.log('Verified record:', {
                 id: verifiedRecord.id,
                 summary_status: verifiedRecord.summary_status,
-                summary_text_length: verifiedRecord.summary_text?.length || 0
+                summary_text_length: typeof verifiedRecord.summary_text === 'string' ? verifiedRecord.summary_text.length : 0
               });
               
               if (!verifiedRecord.summary_text) {
