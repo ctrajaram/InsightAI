@@ -26,7 +26,7 @@ if (typeof window === 'undefined' && supabaseUrl && supabaseAnonKey) {
 export async function GET(request: NextRequest) {
   try {
     // Get the transcription ID from the URL
-    const searchParams = request.nextUrl.searchParams;
+    const { searchParams } = new URL(request.url);
     const transcriptionId = searchParams.get('id');
     const accessToken = searchParams.get('token');
     
@@ -62,7 +62,7 @@ export async function GET(request: NextRequest) {
     // Get the transcription record
     const { data: transcription, error } = await supabase
       .from('transcriptions')
-      .select('*')
+      .select('id, status, transcription_text, summary_text, error, rev_ai_job_id, updated_at')
       .eq('id', transcriptionId)
       .eq('user_id', user.id)
       .single();
@@ -85,11 +85,13 @@ export async function GET(request: NextRequest) {
     // Return the status
     return NextResponse.json({
       success: true,
+      id: transcription.id,
       status: transcription.status,
-      progress: transcription.progress || 0,
       transcriptionText: transcription.transcription_text || '',
+      summaryText: transcription.summary_text || '',
       error: transcription.error || null,
-      updatedAt: transcription.updated_at
+      revAiJobId: transcription.rev_ai_job_id || null,
+      updatedAt: transcription.updated_at || new Date().toISOString()
     });
   } catch (error: any) {
     console.error('Unexpected error in transcription status API:', error);
