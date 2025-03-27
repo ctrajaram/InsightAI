@@ -229,6 +229,25 @@ export async function POST(req: Request) {
       
       if (error) throw error;
       transcription = data;
+
+      // Initialize analysis_status if it's null
+      if (transcription && (transcription.analysis_status === null || transcription.analysis_status === undefined)) {
+        console.log(`Initializing analysis_status for transcription ${transcriptionId}`);
+        const { error: updateError } = await supabaseAdmin
+          .from('transcriptions')
+          .update({
+            analysis_status: 'pending',
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', transcriptionId);
+          
+        if (updateError) {
+          console.error('Error initializing analysis_status:', updateError);
+        } else {
+          transcription.analysis_status = 'pending';
+          console.log(`Successfully initialized analysis_status to 'pending'`);
+        }
+      }
     } catch (fetchError: any) {
       console.error('Error fetching transcription:', fetchError);
       return NextResponse.json({ 
@@ -451,8 +470,7 @@ export async function POST(req: Request) {
                   pain_points: [],
                   feature_requests: [],
                   topics: [],
-                  key_insights: [],
-                  error: responseContent?.substring(0, 500) || 'Failed to analyze transcript'
+                  key_insights: []
                 };
               } else {
                 throw new Error('Could not extract JSON from response');
@@ -468,8 +486,7 @@ export async function POST(req: Request) {
               pain_points: [],
               feature_requests: [],
               topics: [],
-              key_insights: [],
-              error: 'Failed to parse analysis results'
+              key_insights: []
             };
           }
         }
@@ -486,22 +503,61 @@ export async function POST(req: Request) {
 
         // Update transcription record with analysis data - use field names from the database
         console.log('Updating transcription record with analysis data...');
-        const { error: updateError } = await supabaseAdmin
-          .from('transcriptions')
-          .update({
-            analysis_data: analysisData,
-            analysis_status: 'completed',
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', transcriptionId);
-
-        if (updateError) {
-          console.error('Error updating transcription with analysis:', updateError);
-          return NextResponse.json({ 
-            success: false, 
-            error: 'Failed to save analysis results',
-            details: updateError.message 
-          } as const, { status: 500 });
+        
+        // Ensure we have a valid analysis_data object to save
+        const analysisDataToSave = analysisData || {
+          sentiment: 'neutral',
+          sentiment_explanation: 'No analysis data available',
+          pain_points: [],
+          feature_requests: [],
+          topics: [],
+          key_insights: []
+        };
+        
+        // Add a retry mechanism for the database update
+        let updateAttempt = 0;
+        let updateSuccess = false;
+        
+        while (updateAttempt < 3 && !updateSuccess) {
+          updateAttempt++;
+          
+          try {
+            const { error: updateError } = await supabaseAdmin
+              .from('transcriptions')
+              .update({
+                analysis_data: analysisDataToSave,
+                analysis_status: 'completed',
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', transcriptionId);
+    
+            if (updateError) {
+              console.error(`Error updating transcription with analysis (attempt ${updateAttempt}/3):`, updateError);
+              
+              if (updateAttempt < 3) {
+                // Wait before retrying
+                await new Promise(resolve => setTimeout(resolve, 1000 * updateAttempt));
+              } else {
+                return NextResponse.json({ 
+                  success: false, 
+                  error: 'Failed to save analysis results',
+                  details: updateError.message 
+                } as const, { status: 500 });
+              }
+            } else {
+              updateSuccess = true;
+              console.log(`Successfully updated transcription with analysis (attempt ${updateAttempt})`);
+            }
+          } catch (err) {
+            console.error(`Unexpected error during update (attempt ${updateAttempt}/3):`, err);
+            
+            if (updateAttempt < 3) {
+              // Wait before retrying
+              await new Promise(resolve => setTimeout(resolve, 1000 * updateAttempt));
+            } else {
+              throw err;
+            }
+          }
         }
 
         // Double-check that the record was updated correctly
@@ -521,7 +577,8 @@ export async function POST(req: Request) {
         console.log('Analysis completed and saved successfully');
         return NextResponse.json({ 
           success: true,
-          analysis: analysisData
+          analysis: analysisData,
+          timestamp: Date.now() // Add timestamp to prevent caching issues
         } as const);
 
       } catch (error: any) {
