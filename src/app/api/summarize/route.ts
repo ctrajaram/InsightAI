@@ -266,11 +266,11 @@ export async function POST(request: NextRequest) {
     }
     
     // If the transcription is in progress, return the current status
-    if (transcription.summary_status === 'in_progress') {
-      console.log(`Transcription ${transcriptionId} summary is in progress`);
+    if (transcription.summary_status === 'processing') {
+      console.log(`Transcription ${transcriptionId} summary is processing`);
       return NextResponse.json({ 
         success: true,
-        summaryStatus: 'in_progress'
+        summaryStatus: 'processing'
       } as SuccessResponse, { status: 202 });
     }
     
@@ -310,20 +310,20 @@ export async function POST(request: NextRequest) {
       const { error: updateError } = await supabaseAdmin
         .from('transcriptions')
         .update({
-          summary_status: 'in_progress',
+          summary_status: 'processing',
           updated_at: new Date().toISOString()
         })
         .eq('id', transcriptionId);
         
       if (updateError) {
-        console.error('Error updating summary status to in_progress:', updateError);
+        console.error('Error updating summary status to processing:', updateError);
         throw updateError;
       }
     } catch (error: any) {
       console.error('Error updating summary status:', error);
       return NextResponse.json({ 
         success: false, 
-        error: 'Failed to update summary status',
+        error: 'Failed to update summary status to processing',
         details: error.message 
       } as ErrorResponse, { status: 500 });
     }
