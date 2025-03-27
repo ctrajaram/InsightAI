@@ -22,21 +22,43 @@ if (!anonKey && !serviceRoleKey) {
   console.error('Neither SUPABASE_SERVICE_ROLE_KEY nor NEXT_PUBLIC_SUPABASE_ANON_KEY is set');
 }
 
-// Create Supabase client with anon key for regular operations
-const supabase = createClient(
-  supabaseUrl,
-  anonKey || 'MISSING_ANON_KEY'
-);
+// Declare Supabase client variables but don't initialize them yet
+let supabase: ReturnType<typeof createClient> | null = null;
+let supabaseAdmin: ReturnType<typeof createClient> | null = null;
 
-// Create Supabase admin client with service role key for bypassing RLS
-const supabaseAdmin = createClient(
-  supabaseUrl,
-  serviceRoleKey || anonKey || 'MISSING_API_KEY'
-);
+// Only initialize if we have the necessary environment variables
+// This prevents errors during build time when env vars aren't available
+if (supabaseUrl) {
+  try {
+    // Create Supabase client with anon key for regular operations
+    if (anonKey) {
+      supabase = createClient(
+        supabaseUrl,
+        anonKey
+      );
+    }
+    
+    // Create Supabase admin client with service role key for bypassing RLS
+    if (serviceRoleKey || anonKey) {
+      supabaseAdmin = createClient(
+        supabaseUrl,
+        serviceRoleKey || anonKey || ''
+      );
+    }
+  } catch (error) {
+    console.error('Failed to initialize Supabase clients:', error);
+    supabase = null;
+    supabaseAdmin = null;
+  }
+}
 
 // Log which keys we're using (without exposing the actual keys)
-console.log(`Summarize API: Using ${anonKey ? 'anon' : 'missing'} key for regular client`);
-console.log(`Summarize API: Using ${serviceRoleKey ? 'service role' : (anonKey ? 'anon' : 'missing')} key for admin client`);
+if (supabase) {
+  console.log(`Summarize API: Using ${anonKey ? 'anon' : 'missing'} key for regular client`);
+}
+if (supabaseAdmin) {
+  console.log(`Summarize API: Using ${serviceRoleKey ? 'service role' : (anonKey ? 'anon' : 'missing')} key for admin client`);
+}
 
 // OpenAI client
 const openai = new OpenAI({
@@ -134,7 +156,7 @@ async function authenticateUser(accessToken: string | null): Promise<{ userId: s
   
   try {
     // Verify the token with Supabase
-    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(accessToken);
+    const { data: { user }, error: authError } = await (supabaseAdmin ? supabaseAdmin.auth.getUser(accessToken) : Promise.reject(new Error('Supabase admin client is not initialized')));
     
     if (authError || !user) {
       console.error('Authentication error:', authError?.message || 'No user found');
@@ -291,6 +313,15 @@ export async function POST(request: NextRequest) {
     }
     
     // Check if the transcription exists and get the current status
+    if (!supabaseAdmin) {
+      console.error('Supabase admin client is not initialized');
+      return NextResponse.json({ 
+        success: false, 
+        error: 'Internal server error',
+        details: 'Supabase admin client is not initialized'
+      }, { status: 500 });
+    }
+    
     const { data: transcription, error: fetchError } = await supabaseAdmin
       .from('transcriptions')
       .select('id, user_id, transcription_text, summary_status, summary_text, analysis_status, analysis_data, status')
@@ -326,6 +357,15 @@ export async function POST(request: NextRequest) {
     }
     
     // Update the summary status to processing
+    if (!supabaseAdmin) {
+      console.error('Supabase admin client is not initialized');
+      return NextResponse.json({ 
+        success: false, 
+        error: 'Internal server error',
+        details: 'Supabase admin client is not initialized'
+      }, { status: 500 });
+    }
+    
     const { error: updateError } = await supabaseAdmin
       .from('transcriptions')
       .update({
@@ -349,6 +389,15 @@ export async function POST(request: NextRequest) {
     if (transcriptionId) {
       try {
         // Check if this transcription exists in the database
+        if (!supabaseAdmin) {
+          console.error('Supabase admin client is not initialized');
+          return NextResponse.json({ 
+            success: false, 
+            error: 'Internal server error',
+            details: 'Supabase admin client is not initialized'
+          }, { status: 500 });
+        }
+        
         const { data: transcription, error: transcriptionError } = await supabaseAdmin
           .from('transcriptions')
           .select('id, user_id, status, summary_status, summary_text, analysis_status, analysis_data, transcription_text')
@@ -365,6 +414,15 @@ export async function POST(request: NextRequest) {
             // Try to create a new transcription record if we have a user ID
             if (userId) {
               try {
+                if (!supabaseAdmin) {
+                  console.error('Supabase admin client is not initialized');
+                  return NextResponse.json({ 
+                    success: false, 
+                    error: 'Internal server error',
+                    details: 'Supabase admin client is not initialized'
+                  }, { status: 500 });
+                }
+                
                 const { data: newTranscription, error: createError } = await supabaseAdmin
                   .from('transcriptions')
                   .insert({
@@ -499,6 +557,15 @@ export async function POST(request: NextRequest) {
       
       // Update the database with the processing status and placeholder summary
       try {
+        if (!supabaseAdmin) {
+          console.error('Supabase admin client is not initialized');
+          return NextResponse.json({ 
+            success: false, 
+            error: 'Internal server error',
+            details: 'Supabase admin client is not initialized'
+          }, { status: 500 });
+        }
+        
         const { error: updateError } = await supabaseAdmin
           .from('transcriptions')
           .update({
@@ -594,18 +661,54 @@ export async function POST(request: NextRequest) {
       
       console.log('Processed summary data:', JSON.stringify(summaryData).substring(0, 200) + '...');
       
-      if (!summaryData.text || summaryData.text.trim().length === 0) {
-        throw new Error('Generated summary is empty');
+      // Process the summary text
+      let summaryText = '';
+      
+      if (typeof summaryData.text === 'string') {
+        summaryText = summaryData.text;
+      } else if (summaryData.text) {
+        // Try to convert to string if possible
+        summaryText = String(summaryData.text);
+      }
+      
+      if (!summaryText || summaryText.length === 0) {
+        console.error('Generated summary is empty or invalid');
+        
+        // Update the database to indicate the error
+        if (supabaseAdmin) {
+          await supabaseAdmin
+            .from('transcriptions')
+            .update({
+              summary_status: 'error',
+              error: 'Failed to generate a valid summary',
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', transcriptionId);
+        }
+        
+        return NextResponse.json({
+          success: false,
+          error: 'Failed to generate a valid summary'
+        }, { status: 500 });
       }
       
       // Update the database with the summary
-      console.log(`Updating transcription ${transcriptionId} with summary text (length: ${summaryData.text.length})`);
+      console.log(`Updating transcription ${transcriptionId} with summary text (length: ${summaryText.length})`);
       
       let dbUpdateSuccess = true;
       let dbUpdateError = null;
       
       try {
         // First, check if the transcription record exists
+        if (!supabaseAdmin) {
+          console.error('Supabase admin client is not initialized');
+          return NextResponse.json({ 
+            success: false, 
+            error: 'Internal server error',
+            details: 'Supabase admin client is not initialized'
+          }, { status: 500 });
+        }
+        
         const { data: transcriptionRecord, error: fetchError } = await supabaseAdmin
           .from('transcriptions')
           .select('id, summary_text, summary_status')
@@ -623,7 +726,7 @@ export async function POST(request: NextRequest) {
           const { error } = await supabaseAdmin
             .from('transcriptions')
             .update({
-              summary_text: summaryData.text,
+              summary_text: summaryText,
               summary_status: 'completed',
               updated_at: new Date().toISOString()
             })
@@ -639,7 +742,7 @@ export async function POST(request: NextRequest) {
             const { error: retryError } = await supabaseAdmin
               .from('transcriptions')
               .update({
-                summary_text: summaryData.text,
+                summary_text: summaryText,
                 summary_status: 'completed'
               })
               .eq('id', transcriptionId);
@@ -701,15 +804,17 @@ export async function POST(request: NextRequest) {
       if (openaiError.name === 'AbortError' || openaiError.code === 'ETIMEDOUT') {
         console.error('Summary generation timed out after 2 minutes');
         
-        await supabaseAdmin
-          .from('transcriptions')
-          .update({
-            summary_status: 'error',
-            error: 'Summary generation timed out',
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', transcriptionId);
-          
+        if (supabaseAdmin) {
+          await supabaseAdmin
+            .from('transcriptions')
+            .update({
+              summary_status: 'error',
+              error: 'Summary generation timed out',
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', transcriptionId);
+        }
+        
         return NextResponse.json({
           success: false,
           error: 'The summary generation process timed out'
@@ -720,14 +825,16 @@ export async function POST(request: NextRequest) {
       let errorMessage = openaiError.message || 'Error generating summary';
       
       try {
-        await supabaseAdmin
-          .from('transcriptions')
-          .update({
-            summary_status: 'error',
-            error: errorMessage,
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', transcriptionId);
+        if (supabaseAdmin) {
+          await supabaseAdmin
+            .from('transcriptions')
+            .update({
+              summary_status: 'error',
+              error: errorMessage,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', transcriptionId);
+        }
       } catch (updateError) {
         console.error('Failed to update error status in database:', updateError);
       }

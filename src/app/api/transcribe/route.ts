@@ -20,14 +20,26 @@ if (!anonKey && !serviceRoleKey) {
   console.error('Neither SUPABASE_SERVICE_ROLE_KEY nor NEXT_PUBLIC_SUPABASE_ANON_KEY is set');
 }
 
-// Create Supabase admin client with service role key for bypassing RLS
-const supabaseAdmin = createClient(
-  supabaseUrl,
-  serviceRoleKey || anonKey || 'MISSING_API_KEY'
-);
+// Declare Supabase client variables but don't initialize them yet
+let supabaseAdmin: ReturnType<typeof createClient> | null = null;
 
-// Log which keys we're using (without exposing the actual keys)
-console.log(`Transcribe API: Using ${serviceRoleKey ? 'service role' : (anonKey ? 'anon' : 'missing')} key for admin client`);
+// Only initialize if we have the necessary environment variables
+// This prevents errors during build time when env vars aren't available
+if (supabaseUrl && (serviceRoleKey || anonKey)) {
+  try {
+    // Create Supabase admin client with service role key for bypassing RLS
+    supabaseAdmin = createClient(
+      supabaseUrl,
+      serviceRoleKey || anonKey || ''
+    );
+    
+    // Log which keys we're using (without exposing the actual keys)
+    console.log(`Transcribe API: Using ${serviceRoleKey ? 'service role' : (anonKey ? 'anon' : 'missing')} key for admin client`);
+  } catch (error) {
+    console.error('Failed to initialize Supabase client:', error);
+    supabaseAdmin = null;
+  }
+}
 
 // Helper function to wait for a specified time
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -257,14 +269,16 @@ async function processAudioFile(url: string, transcriptionId: string) {
     console.log(`File size: ${contentLength} bytes, type: ${contentType}`);
     
     // Update the transcription record to indicate processing has started
-    await supabaseAdmin
-      .from('transcriptions')
-      .update({
-        status: 'processing',
-        transcription_text: 'Processing your audio file. Please wait...',
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', transcriptionId);
+    if (supabaseAdmin) {
+      await supabaseAdmin
+        .from('transcriptions')
+        .update({
+          status: 'processing',
+          transcription_text: 'Processing your audio file. Please wait...',
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', transcriptionId);
+    }
     
     // Check if file is smaller than our max file size
     if (contentLength > MAX_FILE_SIZE) {
@@ -277,14 +291,16 @@ async function processAudioFile(url: string, transcriptionId: string) {
     }
     
     // Update status to indicate we're processing
-    await supabaseAdmin
-      .from('transcriptions')
-      .update({
-        status: 'processing',
-        transcription_text: 'Your audio is being processed. This may take several minutes.',
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', transcriptionId);
+    if (supabaseAdmin) {
+      await supabaseAdmin
+        .from('transcriptions')
+        .update({
+          status: 'processing',
+          transcription_text: 'Your audio is being processed. This may take several minutes.',
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', transcriptionId);
+    }
     
     // Ensure the URL is publicly accessible
     // If it's a Supabase storage URL, it might need to be a signed URL
@@ -308,41 +324,47 @@ async function processAudioFile(url: string, transcriptionId: string) {
         const job = await submitRevAiJob(accessibleUrl);
         
         // Update the database with the Rev.ai job ID
-        await supabaseAdmin
-          .from('transcriptions')
-          .update({
-            status: 'processing',
-            transcription_text: `Rev.ai transcription in progress. Job ID: ${job.id}`,
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', transcriptionId);
+        if (supabaseAdmin) {
+          await supabaseAdmin
+            .from('transcriptions')
+            .update({
+              status: 'processing',
+              transcription_text: `Rev.ai transcription in progress. Job ID: ${job.id}`,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', transcriptionId);
+        }
         
         // Poll for job completion
         const transcriptionText = await pollRevAiJobCompletion(job.id);
         
         // Update the database with the complete transcription
-        await supabaseAdmin
-          .from('transcriptions')
-          .update({
-            status: 'completed',
-            transcription_text: transcriptionText,
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', transcriptionId);
-          
+        if (supabaseAdmin) {
+          await supabaseAdmin
+            .from('transcriptions')
+            .update({
+              status: 'completed',
+              transcription_text: transcriptionText,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', transcriptionId);
+        }
+        
         console.log('Rev.ai transcription completed and saved to database');
       } catch (backgroundError: unknown) {
         console.error('Background Rev.ai transcription process failed:', backgroundError);
         
         // Update the database with the error
-        await supabaseAdmin
-          .from('transcriptions')
-          .update({
-            status: 'error',
-            error: `Rev.ai processing failed: ${backgroundError instanceof Error ? backgroundError.message : String(backgroundError)}`,
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', transcriptionId);
+        if (supabaseAdmin) {
+          await supabaseAdmin
+            .from('transcriptions')
+            .update({
+              status: 'error',
+              error: `Rev.ai processing failed: ${backgroundError instanceof Error ? backgroundError.message : String(backgroundError)}`,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', transcriptionId);
+        }
       }
     })().catch(error => {
       console.error('Unhandled error in Rev.ai background process:', error);
@@ -357,14 +379,16 @@ async function processAudioFile(url: string, transcriptionId: string) {
     console.error('Error processing audio file:', error);
     
     // Update the status with the error
-    await supabaseAdmin
-      .from('transcriptions')
-      .update({
-        status: 'error',
-        error: error instanceof Error ? error.message : String(error),
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', transcriptionId);
+    if (supabaseAdmin) {
+      await supabaseAdmin
+        .from('transcriptions')
+        .update({
+          status: 'error',
+          error: error instanceof Error ? error.message : String(error),
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', transcriptionId);
+    }
     
     throw error;
   }
@@ -423,8 +447,16 @@ export async function POST(request: NextRequest) {
     }
     
     // Verify the token with Supabase
-    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(accessToken);
-
+    const userResponse = supabaseAdmin?.auth.getUser(accessToken);
+    if (!userResponse) {
+      return NextResponse.json({
+        success: false,
+        error: 'Authentication failed: Supabase client not initialized'
+      }, { status: 500 });
+    }
+    
+    const { data: { user }, error: authError } = await userResponse;
+    
     if (authError || !user) {
       console.error('Authentication error:', authError?.message || 'No user found');
       return NextResponse.json(
@@ -442,22 +474,21 @@ export async function POST(request: NextRequest) {
     try {
       // Use retry operation to handle potential database timing issues
       transcriptionData = await retryOperation(async () => {
-        const { data, error } = await supabaseAdmin
+        if (!supabaseAdmin) {
+          throw new Error('Supabase admin client not initialized');
+        }
+        
+        const response = await supabaseAdmin
           .from('transcriptions')
           .select('*')
           .eq('id', transcriptionId)
           .single();
           
-        if (error) {
-          console.error('Error retrieving transcription record:', error);
-          throw error;
+        if (response.error) {
+          throw new Error(`Database error: ${response.error.message}`);
         }
         
-        if (!data) {
-          throw new Error('Transcription record not found');
-        }
-        
-        return data;
+        return response.data;
       }, 5, 500); // 5 retries with 500ms initial delay
       
       console.log('Successfully found transcription record:', transcriptionData.id);
@@ -530,18 +561,21 @@ export async function POST(request: NextRequest) {
     // Get the current transcription text from the database to include in the response
     let currentTranscription;
     try {
-      const { data, error } = await supabaseAdmin
+      if (!supabaseAdmin) {
+        throw new Error('Supabase admin client not initialized');
+      }
+      
+      const response = await supabaseAdmin
         .from('transcriptions')
         .select('transcription_text, status')
         .eq('id', transcriptionId)
         .single();
         
-      if (error) {
-        console.error('Error fetching current transcription status:', error);
-        // We'll continue even if this fails, using the original transcription data
-      } else {
-        currentTranscription = data;
+      if (response.error) {
+        throw new Error(`Database error: ${response.error.message}`);
       }
+      
+      currentTranscription = response.data;
     } catch (fetchError) {
       console.error('Exception fetching current transcription:', fetchError);
     }

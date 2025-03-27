@@ -29,7 +29,7 @@ export async function POST(req: Request) {
   try {
     // Log request headers to help debug
     const headers = Object.fromEntries(req.headers.entries());
-    console.log('Request headers:', JSON.stringify(headers, null, 2));
+    console.log('Analysis API: Request headers:', JSON.stringify(headers, null, 2));
     
     // Check if the request body is empty
     const contentLength = req.headers.get('content-length');
@@ -114,40 +114,51 @@ export async function POST(req: Request) {
       }, { status: 400 });
     }
     
-    // Set up Supabase clients
-    let supabase;
-    let supabaseAdmin;
+    // Initialize Supabase clients
+    let supabase: ReturnType<typeof createClient> | null = null;
+    let supabaseAdmin: ReturnType<typeof createClient> | null = null;
     
     try {
       // Initialize Supabase client with user token if provided
-      if (accessToken) {
+      if (accessToken && process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
         console.log('Analysis API: Using user token for authentication');
         supabase = createClient(
-          process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-          process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
+          process.env.NEXT_PUBLIC_SUPABASE_URL,
+          process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
           {
             global: { headers: { Authorization: `Bearer ${accessToken}` } },
           }
         );
-      } else {
+      } else if (process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
         console.log('Analysis API: Using anon key for regular client');
         supabase = createClient(
-          process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-          process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
+          process.env.NEXT_PUBLIC_SUPABASE_URL,
+          process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
         );
       }
       
-      // Always initialize admin client with service role for database operations
-      console.log('Analysis API: Using service role key for admin client');
-      supabaseAdmin = createClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-        process.env.SUPABASE_SERVICE_ROLE_KEY || ''
-      );
+      // Only initialize admin client if service role key is available
+      if (process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+        console.log('Analysis API: Using service role key for admin client');
+        supabaseAdmin = createClient(
+          process.env.NEXT_PUBLIC_SUPABASE_URL,
+          process.env.SUPABASE_SERVICE_ROLE_KEY
+        );
+      }
     } catch (error) {
       console.error('Error initializing Supabase clients:', error);
       return NextResponse.json({ 
         success: false, 
         error: 'Failed to initialize database connection' 
+      }, { status: 500 });
+    }
+    
+    // Check if Supabase clients were initialized
+    if (!supabase || !supabaseAdmin) {
+      console.error('Supabase clients not initialized due to missing environment variables');
+      return NextResponse.json({ 
+        success: false, 
+        error: 'Server configuration error: Database client not initialized' 
       }, { status: 500 });
     }
     
@@ -167,11 +178,23 @@ export async function POST(req: Request) {
       }, { status: 404 });
     }
     
+    // Ensure we have a valid transcription object
+    if (!transcription || typeof transcription !== 'object') {
+      return NextResponse.json({
+        success: false,
+        error: 'Invalid transcription data format'
+      }, { status: 400 });
+    }
+
     // Check if there's a summary to use for the analysis
     let summaryText = '';
     if (transcription.summary_text && transcription.summary_status === 'completed') {
-      console.log('Using existing summary for analysis');
-      summaryText = transcription.summary_text;
+      if (typeof transcription.summary_text === 'string') {
+        summaryText = transcription.summary_text;
+      } else {
+        // Try to convert to string if possible
+        summaryText = String(transcription.summary_text);
+      }
     }
     
     // Check if transcription is complete
@@ -189,98 +212,32 @@ export async function POST(req: Request) {
       }, { status: 202 }); // 202 Accepted is more appropriate than 400 Bad Request
     }
     
-    // If there's no transcription text, we can't analyze it
-    if (!transcription.transcription_text || transcription.transcription_text.trim().length === 0) {
-      console.log(`Transcription ${transcriptionId} has no text, cannot analyze`);
-      return NextResponse.json({ 
-        success: false, 
-        error: 'Transcription has no text',
-        details: 'Transcription text is empty or missing'
+    // Extract the text to analyze
+    let textToAnalyze = '';
+    
+    if (typeof transcription.transcription_text === 'string') {
+      textToAnalyze = transcription.transcription_text;
+    } else if (transcription.transcription_text && typeof transcription.transcription_text === 'object') {
+      // Try to convert object to string if possible
+      textToAnalyze = String(transcription.transcription_text);
+    } else {
+      return NextResponse.json({
+        success: false,
+        error: 'Invalid transcription text format'
       }, { status: 400 });
     }
     
-    // Update the analysis status to processing
-    const { error: updateError } = await supabaseAdmin
-      .from('transcriptions')
-      .update({
-        analysis_status: 'processing',
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', transcriptionId);
-    
-    if (updateError) {
-      console.error('Error updating analysis status:', updateError);
-      return NextResponse.json({ 
-        success: false, 
-        error: 'Failed to update analysis status',
-        details: updateError.message 
-      }, { status: 500 });
+    // Trim the text if it's too long
+    if (textToAnalyze.length > MAX_TEXT_LENGTH) {
+      console.log(`Transcription text is too long (${textToAnalyze.length} chars), trimming to ${MAX_TEXT_LENGTH} chars`);
+      textToAnalyze = textToAnalyze.substring(0, MAX_TEXT_LENGTH);
     }
     
-    // If transcription text is provided directly, use it
-    let finalTranscriptionText = '';
-    
-    if (transcription.transcription_text && typeof transcription.transcription_text === 'string') {
-      console.log('Using provided transcription text');
-      finalTranscriptionText = transcription.transcription_text;
-    } else {
-      // Otherwise, fetch from database
-      console.log('Querying for transcription with ID:', transcriptionId);
-      const { data: transcription, error: directError } = await supabase
-        .from('transcriptions')
-        .select('*')
-        .eq('id', transcriptionId)
-        .single();
-        
-      if (directError) {
-        console.error('Error fetching transcription:', directError);
-        return NextResponse.json({ 
-          error: 'Transcription not found',
-          details: directError.message || 'No matching record found with ID: ' + transcriptionId
-        }, { status: 404 });
-      }
-
-      if (!transcription) {
-        console.error('No transcription found with ID:', transcriptionId);
-        return NextResponse.json({ 
-          error: 'Transcription not found',
-          details: 'No matching record found with ID: ' + transcriptionId
-        }, { status: 404 });
-      }
-
-      console.log('Found transcription record:', transcription);
-
-      // Check if transcription text exists - use the field name from the database
-      finalTranscriptionText = transcription.transcription_text;
-      if (!finalTranscriptionText) {
-        console.error('Transcription text is empty in record:', transcription);
-        return NextResponse.json({ error: 'Transcription text is empty' }, { status: 400 });
-      }
-    }
-
-    // Truncate text if it's too long to avoid timeouts
-    let textToAnalyze = finalTranscriptionText;
-    if (finalTranscriptionText.length > MAX_TEXT_LENGTH) {
-      console.log(`Transcription text too long (${finalTranscriptionText.length} chars), truncating to ${MAX_TEXT_LENGTH} chars`);
-      
-      // Take the first part, middle part, and last part to get a representative sample
-      const firstPart = finalTranscriptionText.substring(0, MAX_TEXT_LENGTH * 0.5);
-      const middlePart = finalTranscriptionText.substring(
-        Math.floor(finalTranscriptionText.length / 2 - MAX_TEXT_LENGTH * 0.25),
-        Math.floor(finalTranscriptionText.length / 2 + MAX_TEXT_LENGTH * 0.25)
-      );
-      const lastPart = finalTranscriptionText.substring(
-        finalTranscriptionText.length - MAX_TEXT_LENGTH * 0.25
-      );
-      
-      textToAnalyze = `${firstPart}\n\n[...middle content omitted...]\n\n${middlePart}\n\n[...more content omitted...]\n\n${lastPart}`;
-    }
-
     // Verify we have text to analyze
     if (!textToAnalyze || textToAnalyze.trim().length === 0) {
       return NextResponse.json({
         success: false,
-        error: 'No transcription text provided for analysis'
+        error: 'Transcription text is empty'
       }, { status: 400 });
     }
 
