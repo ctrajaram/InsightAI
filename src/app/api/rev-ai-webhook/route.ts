@@ -475,13 +475,67 @@ export async function POST(request: NextRequest) {
             console.log('Verification data:', verifyData);
           } else {
             console.log('Verification successful: Transcription properly updated');
+            
+            // Trigger the analyze and summarize endpoints
+            try {
+              console.log(`Triggering analyze endpoint for transcription ${transcriptionId}`);
+              
+              // Determine the base URL for API calls
+              let baseUrl = 'http://localhost:3000';
+              if (process.env.VERCEL_ENV === 'production' && process.env.NEXT_PUBLIC_VERCEL_URL) {
+                baseUrl = `https://${process.env.NEXT_PUBLIC_VERCEL_URL}`;
+              } else if (process.env.VERCEL_URL) {
+                baseUrl = `https://${process.env.VERCEL_URL}`;
+              } else if (process.env.NEXT_PUBLIC_APP_URL) {
+                baseUrl = process.env.NEXT_PUBLIC_APP_URL;
+              }
+              
+              // Call the analyze endpoint
+              const analyzeResponse = await fetch(`${baseUrl}/api/analyze`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  transcriptionId
+                })
+              });
+              
+              if (!analyzeResponse.ok) {
+                const analyzeError = await analyzeResponse.text();
+                console.error(`Error calling analyze endpoint: ${analyzeResponse.status} ${analyzeResponse.statusText}`, analyzeError);
+              } else {
+                console.log('Successfully triggered analyze endpoint');
+              }
+              
+              // Call the summarize endpoint
+              console.log(`Triggering summarize endpoint for transcription ${transcriptionId}`);
+              const summarizeResponse = await fetch(`${baseUrl}/api/summarize`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  transcriptionId
+                })
+              });
+              
+              if (!summarizeResponse.ok) {
+                const summarizeError = await summarizeResponse.text();
+                console.error(`Error calling summarize endpoint: ${summarizeResponse.status} ${summarizeResponse.statusText}`, summarizeError);
+              } else {
+                console.log('Successfully triggered summarize endpoint');
+              }
+            } catch (apiError) {
+              console.error('Error triggering analyze/summarize endpoints:', apiError);
+            }
           }
-          
-          return NextResponse.json({ success: true } as SuccessResponse);
         } catch (updateError: any) {
           console.error('Error updating transcription after retries:', updateError);
           throw updateError;
         }
+        
+        return NextResponse.json({ success: true } as SuccessResponse);
       } catch (error: any) {
         console.error('Error processing completed transcription:', error);
         
