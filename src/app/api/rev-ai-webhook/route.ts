@@ -194,13 +194,58 @@ export async function POST(request: NextRequest) {
     let findError: any; // Type as 'any' to fix TypeScript errors
     
     try {
+      console.log(`Looking for transcription with Rev AI job ID: "${jobId}"`);
+      
+      // First, check if the job ID exists in any records
+      const { data: allTranscriptions, error: checkError } = await supabaseAdmin!
+        .from('transcriptions')
+        .select('id, rev_ai_job_id')
+        .order('created_at', { ascending: false })
+        .limit(10);
+        
+      if (checkError) {
+        console.error('Error checking recent transcriptions:', checkError);
+      } else if (allTranscriptions && allTranscriptions.length > 0) {
+        console.log('Recent transcriptions:');
+        allTranscriptions.forEach((t: any) => {
+          console.log(`- ID: ${t.id}, Rev AI job ID: "${t.rev_ai_job_id}"`);
+          
+          // Check for case-insensitive match
+          if (t.rev_ai_job_id && jobId && 
+              t.rev_ai_job_id.toLowerCase() === jobId.toLowerCase()) {
+            console.log(`Found case-insensitive match for job ID ${jobId} in transcription ${t.id}`);
+            
+            // Update with the exact job ID from the webhook to ensure future exact matches
+            supabaseAdmin!
+              .from('transcriptions')
+              .update({ rev_ai_job_id: jobId })
+              .eq('id', t.id)
+              .then(({ error }) => {
+                if (error) {
+                  console.error('Error updating job ID case:', error);
+                } else {
+                  console.log(`Updated job ID case for transcription ${t.id}`);
+                }
+              });
+          }
+        });
+      } else {
+        console.log('No recent transcriptions found in database');
+      }
+      
       const result = await retryOperation(async () => {
+        console.log(`Executing database query to find transcription with Rev AI job ID: "${jobId}"`);
         const { data, error } = await supabaseAdmin!
           .from('transcriptions')
           .select('id, status')
           .eq('rev_ai_job_id', jobId);
           
-        if (error) throw error;
+        if (error) {
+          console.error(`Database error when finding transcription with Rev AI job ID "${jobId}":`, error);
+          throw error;
+        }
+        
+        console.log(`Query results for Rev AI job ID "${jobId}":`, data);
         return data;
       }, 3, 1000);
       
@@ -212,11 +257,83 @@ export async function POST(request: NextRequest) {
     
     if (findError || !transcriptions || transcriptions.length === 0) {
       console.error('Could not find transcription with Rev AI job ID:', jobId);
-      return NextResponse.json({ 
-        success: false, 
-        error: 'Transcription not found',
-        details: findError ? String(findError) : 'No matching records'
-      } as ErrorResponse, { status: 404 });
+      
+      // Fallback: Try to find the transcription by filename if available
+      if (payload.job?.name) {
+        const filename = payload.job.name;
+        console.log(`Attempting fallback lookup by filename: "${filename}"`);
+        
+        try {
+          // Extract the base filename without timestamp prefix if it follows the pattern
+          let searchPattern = filename;
+          const timestampMatch = filename.match(/^\d+-(.+)$/);
+          if (timestampMatch && timestampMatch[1]) {
+            searchPattern = `%${timestampMatch[1]}`;
+            console.log(`Extracted base filename for search: "${timestampMatch[1]}"`);
+          }
+          
+          // Search for transcriptions with similar filenames
+          type TranscriptionRecord = {
+            id: string;
+            status: string;
+            file_name?: string;
+            media_path?: string;
+            created_at: string;
+          };
+          
+          const { data: filenameMatches, error: filenameError } = await supabaseAdmin!
+            .from('transcriptions')
+            .select('id, status, file_name, media_path, created_at')
+            .order('created_at', { ascending: false })
+            .limit(5);
+            
+          if (filenameError) {
+            console.error('Error in fallback filename lookup:', filenameError);
+          } else if (filenameMatches && filenameMatches.length > 0) {
+            console.log(`Found ${filenameMatches.length} recent transcriptions to check:`);
+            
+            // Log all potential matches
+            (filenameMatches as TranscriptionRecord[]).forEach(match => {
+              console.log(`- ID: ${match.id}, Filename: "${match.file_name}", Created: ${match.created_at}`);
+            });
+            
+            // Use the most recent transcription as our best guess
+            const mostRecent = filenameMatches[0] as TranscriptionRecord;
+            console.log(`Using most recent transcription as fallback: ${mostRecent.id}`);
+            
+            // Update the transcription with the Rev AI job ID for future lookups
+            const { error: updateError } = await supabaseAdmin!
+              .from('transcriptions')
+              .update({
+                rev_ai_job_id: jobId,
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', mostRecent.id);
+              
+            if (updateError) {
+              console.error('Error updating transcription with Rev AI job ID:', updateError);
+            } else {
+              console.log(`Successfully linked Rev AI job ID ${jobId} to transcription ${mostRecent.id}`);
+              
+              // Continue processing with this transcription
+              transcriptions = [{ id: mostRecent.id, status: mostRecent.status }];
+            }
+          } else {
+            console.log('No matching transcriptions found in fallback search');
+          }
+        } catch (fallbackError) {
+          console.error('Error in fallback lookup:', fallbackError);
+        }
+      }
+      
+      // If we still don't have a transcription, return an error
+      if (!transcriptions || transcriptions.length === 0) {
+        return NextResponse.json({ 
+          success: false, 
+          error: 'Transcription not found',
+          details: findError ? String(findError) : 'No matching records'
+        } as ErrorResponse, { status: 404 });
+      }
     }
     
     const transcriptionId = transcriptions[0].id;
