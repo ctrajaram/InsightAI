@@ -513,6 +513,43 @@ async function processAudioFile(url: string, transcriptionId: string) {
   }
 }
 
+// Function to test the Rev.ai API key
+async function testRevAiApiKey() {
+  try {
+    console.log('Testing Rev.ai API key...');
+    
+    // Make a simple request to the Rev.ai API to check if the key is valid
+    const response = await fetch(`${REV_AI_BASE_URL}/account`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${REV_AI_API_KEY}`
+      }
+    });
+    
+    console.log('Rev.ai API key test response status:', response.status, response.statusText);
+    
+    const responseText = await response.text();
+    console.log('Rev.ai API key test response:', responseText);
+    
+    if (!response.ok) {
+      console.error('Rev.ai API key test failed:', responseText);
+      return false;
+    }
+    
+    try {
+      const data = JSON.parse(responseText);
+      console.log('Rev.ai account info:', data);
+      return true;
+    } catch (parseError) {
+      console.error('Failed to parse Rev.ai account response as JSON:', parseError);
+      return false;
+    }
+  } catch (error) {
+    console.error('Error testing Rev.ai API key:', error);
+    return false;
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
     // Parse request body with error handling
@@ -671,6 +708,16 @@ export async function POST(request: NextRequest) {
         }, 
         { status: 500 }
       );
+    }
+    
+    // Test the Rev.ai API key before proceeding
+    const isRevAiKeyValid = await testRevAiApiKey();
+    if (!isRevAiKeyValid) {
+      console.error('Rev.ai API key is invalid or not properly configured');
+      return NextResponse.json({
+        success: false,
+        error: 'Rev.ai API key is invalid or not properly configured. Please check your environment variables.'
+      }, { status: 500 });
     }
     
     // Process the file using Rev.ai
