@@ -155,29 +155,42 @@ async function submitRevAiJob(mediaUrl: string) {
     const webhookUrl = `${baseUrl}/api/rev-ai-webhook`;
     console.log('Final webhook URL:', webhookUrl);
     
+    // Log the full request being sent to Rev.ai
+    console.log('Sending request to Rev.ai with:');
+    console.log('- API Key present:', REV_AI_API_KEY ? 'Yes' : 'No');
+    console.log('- Media URL:', mediaUrl);
+    console.log('- Webhook URL:', webhookUrl);
+    
+    const requestBody = {
+      source_config: {
+        url: mediaUrl
+      },
+      metadata: 'InsightAI Transcription',
+      callback_url: webhookUrl
+    };
+    
+    console.log('Request body:', JSON.stringify(requestBody));
+    
     const response = await fetch(`${REV_AI_BASE_URL}/jobs`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${REV_AI_API_KEY}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        source_config: {
-          url: mediaUrl
-        },
-        metadata: 'InsightAI Transcription',
-        callback_url: webhookUrl
-      })
+      body: JSON.stringify(requestBody)
     });
     
     if (!response.ok) {
       const errorText = await response.text();
       console.error('Rev.ai job submission failed:', errorText);
+      console.error('Response status:', response.status, response.statusText);
+      console.error('Response headers:', JSON.stringify(Object.fromEntries([...response.headers.entries()])));
       throw new Error(`Rev.ai API error: ${response.status} ${response.statusText} - ${errorText}`);
     }
     
     const data = await response.json();
     console.log('Rev.ai job submitted successfully:', data.id);
+    console.log('Full Rev.ai response:', JSON.stringify(data));
     return data;
   } catch (error) {
     console.error('Error submitting Rev.ai job:', error);
