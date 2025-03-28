@@ -99,6 +99,11 @@ async function retryWithExponentialBackoff<T>(
 const REV_AI_API_KEY = typeof window === 'undefined' ? process.env.REV_AI_API_KEY || '' : '';
 const REV_AI_BASE_URL = 'https://api.rev.ai/speechtotext/v1';
 
+// Log if Rev.ai API key is missing
+if (!REV_AI_API_KEY) {
+  console.error('REV_AI_API_KEY is not set. Transcription will fail.');
+}
+
 // Maximum file size allowed (400MB)
 const MAX_FILE_SIZE = 400 * 1024 * 1024;
 
@@ -113,8 +118,13 @@ async function submitRevAiJob(mediaUrl: string) {
     // Construct the webhook URL based on the deployment URL or localhost for development
     let baseUrl = 'http://localhost:3000'; // Default for local development
     
+    // First check for a custom Vercel URL (most reliable)
+    if (process.env.NEXT_PUBLIC_VERCEL_URL) {
+      baseUrl = `https://${process.env.NEXT_PUBLIC_VERCEL_URL}`;
+      console.log('Using custom Vercel URL for webhook:', baseUrl);
+    }
     // In production on Vercel
-    if (process.env.VERCEL_URL) {
+    else if (process.env.VERCEL_URL) {
       baseUrl = `https://${process.env.VERCEL_URL}`;
       console.log('Using Vercel URL for webhook:', baseUrl);
     } 
@@ -123,15 +133,22 @@ async function submitRevAiJob(mediaUrl: string) {
       baseUrl = process.env.NEXT_PUBLIC_APP_URL;
       console.log('Using custom app URL for webhook:', baseUrl);
     }
+    // For Vercel preview deployments
+    else if (process.env.VERCEL_BRANCH_URL) {
+      baseUrl = `https://${process.env.VERCEL_BRANCH_URL}`;
+      console.log('Using Vercel branch URL for webhook:', baseUrl);
+    }
     
     // Add additional logging for debugging webhook URL construction
     console.log('Environment variables for webhook URL:');
+    console.log('- NEXT_PUBLIC_VERCEL_URL:', process.env.NEXT_PUBLIC_VERCEL_URL || 'not set');
     console.log('- VERCEL_URL:', process.env.VERCEL_URL || 'not set');
+    console.log('- VERCEL_BRANCH_URL:', process.env.VERCEL_BRANCH_URL || 'not set');
     console.log('- NEXT_PUBLIC_APP_URL:', process.env.NEXT_PUBLIC_APP_URL || 'not set');
     console.log('- VERCEL_ENV:', process.env.VERCEL_ENV || 'not set');
     
     // Force HTTPS for production environments
-    if (process.env.VERCEL_ENV === 'production' && !baseUrl.startsWith('https://')) {
+    if ((process.env.VERCEL_ENV === 'production' || process.env.VERCEL_ENV === 'preview') && !baseUrl.startsWith('https://')) {
       baseUrl = baseUrl.replace('http://', 'https://');
     }
     
