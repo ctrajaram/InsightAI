@@ -305,27 +305,72 @@ async function pollRevAiJobCompletion(jobId: string, maxAttempts = 60, delayMs =
 
 // Function to process audio files
 async function processAudioFile(url: string, transcriptionId: string) {
-  console.log('Processing audio file with URL:', url);
+  console.log(`Processing audio file with URL: ${url}`);
   
   try {
-    // Verify if the URL is properly formatted and accessible
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      throw new Error(`Invalid URL format: ${url}. URL must start with http:// or https://`);
-    }
+    // Check if this is a Supabase storage URL
+    const isSupabaseUrl = url.includes('supabase.co/storage');
     
-    // Fetch the file to determine its size and type
+    // Fetch the file to check its size and type
     console.log('Fetching file to check size and type...');
-    const response = await fetch(url);
+    const response = await fetch(url, { method: 'HEAD' });
     
     if (!response.ok) {
-      throw new Error(`Failed to fetch audio file: ${response.statusText}`);
+      throw new Error(`Failed to fetch file metadata: ${response.status} ${response.statusText}`);
     }
     
-    // Get the content length from headers
-    const contentLength = parseInt(response.headers.get('content-length') || '0');
-    const contentType = response.headers.get('content-type') || '';
+    const contentLength = response.headers.get('content-length');
+    const contentType = response.headers.get('content-type');
     
-    console.log(`File size: ${contentLength} bytes, type: ${contentType}`);
+    const fileSize = contentLength ? parseInt(contentLength, 10) : 0;
+    console.log(`File size: ${fileSize} bytes, type: ${contentType}`);
+    
+    if (fileSize > MAX_FILE_SIZE) {
+      throw new Error(`File size (${fileSize} bytes) exceeds maximum allowed size (${MAX_FILE_SIZE} bytes)`);
+    }
+    
+    // Generate a signed URL if this is a Supabase storage URL
+    let accessibleUrl = url;
+    if (isSupabaseUrl && supabaseAdmin) {
+      console.log('Generating signed URL for Supabase storage file...');
+      
+      try {
+        // Extract bucket and file path from the URL
+        // URL format: https://<project>.supabase.co/storage/v1/object/public/<bucket>/<path>
+        const urlParts = url.split('/storage/v1/object/public/');
+        if (urlParts.length === 2) {
+          const [bucketAndPath] = urlParts[1].split('?');
+          const [bucket, ...pathParts] = bucketAndPath.split('/');
+          const filePath = pathParts.join('/');
+          
+          console.log(`Extracted bucket: ${bucket}, path: ${filePath}`);
+          
+          // Generate a signed URL that expires in 1 hour
+          const { data: signedUrlData, error: signedUrlError } = await supabaseAdmin.storage
+            .from(bucket)
+            .createSignedUrl(filePath, 3600); // 1 hour expiry
+          
+          if (signedUrlError) {
+            console.error('Error generating signed URL:', signedUrlError);
+          } else if (signedUrlData?.signedUrl) {
+            accessibleUrl = signedUrlData.signedUrl;
+            console.log('Successfully generated signed URL for Rev.ai access');
+          }
+        }
+      } catch (signedUrlError) {
+        console.error('Error parsing URL or generating signed URL:', signedUrlError);
+        console.log('Continuing with original URL as fallback');
+      }
+    } else {
+      console.log(`URL appears to be a ${isSupabaseUrl ? 'Supabase storage URL without a token' : 'non-Supabase URL'}. This might not be accessible to Rev.ai`);
+    }
+    
+    console.log(`Using URL for Rev.ai: ${accessibleUrl}`);
+    
+    // Verify if the URL is properly formatted and accessible
+    if (!accessibleUrl.startsWith('http://') && !accessibleUrl.startsWith('https://')) {
+      throw new Error(`Invalid URL format: ${accessibleUrl}. URL must start with http:// or https://`);
+    }
     
     // Update the transcription record to indicate processing has started
     if (supabaseAdmin) {
@@ -337,11 +382,6 @@ async function processAudioFile(url: string, transcriptionId: string) {
           updated_at: new Date().toISOString()
         })
         .eq('id', transcriptionId);
-    }
-    
-    // Check if file is smaller than our max file size
-    if (contentLength > MAX_FILE_SIZE) {
-      throw new Error(`File too large (${contentLength} bytes). Maximum allowed size is ${MAX_FILE_SIZE} bytes.`);
     }
     
     // Check if Rev.ai API key is configured
@@ -363,40 +403,38 @@ async function processAudioFile(url: string, transcriptionId: string) {
     
     // Ensure the URL is publicly accessible
     // If it's a Supabase storage URL, it might need to be a signed URL
-    let accessibleUrl = url;
-    
-    // If the URL contains 'supabase' and doesn't have a token parameter, it might need signing
-    if (url.includes('supabase') && !url.includes('token=')) {
-      console.log('URL appears to be a Supabase storage URL without a token. This might not be accessible to Rev.ai');
-    }
-    
-    console.log('Using URL for Rev.ai:', accessibleUrl);
-    
     // Start a background process to handle the Rev.ai transcription
     // This won't block the API response
     (async () => {
       try {
         console.log('Starting background processing with Rev.ai');
+        console.log(`Submitting job to Rev.ai with URL: ${accessibleUrl}`);
         
-        // Submit job to Rev.ai
-        console.log('Submitting job to Rev.ai with URL:', accessibleUrl);
-        const job = await submitRevAiJob(accessibleUrl);
+        // Submit the job to Rev.ai
+        const revAiJob = await submitRevAiJob(accessibleUrl);
         
-        // Update the database with the Rev.ai job ID
+        // Update the transcription record with the Rev.ai job ID
         if (supabaseAdmin) {
-          await supabaseAdmin
+          console.log(`Rev.ai job created with ID: ${revAiJob.id}, updating transcription record`);
+          
+          const { error: updateError } = await supabaseAdmin
             .from('transcriptions')
             .update({
+              rev_ai_job_id: revAiJob.id,
               status: 'processing',
-              transcription_text: `Rev.ai transcription in progress. Job ID: ${job.id}`,
-              rev_ai_job_id: job.id,
               updated_at: new Date().toISOString()
             })
             .eq('id', transcriptionId);
+          
+          if (updateError) {
+            console.error('Error updating transcription record with Rev.ai job ID:', updateError);
+          } else {
+            console.log(`Successfully updated transcription record ${transcriptionId} with Rev.ai job ID ${revAiJob.id}`);
+          }
         }
         
         // Poll for job completion
-        const transcriptionText = await pollRevAiJobCompletion(job.id);
+        const transcriptionText = await pollRevAiJobCompletion(revAiJob.id);
         
         // Update the database with the complete transcription
         if (supabaseAdmin) {
