@@ -2664,6 +2664,171 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
     }
   };
 
+  useEffect(() => {
+    if (transcriptionRecord) {
+      console.log('TranscriptionRecord updated:', {
+        id: transcriptionRecord.id,
+        summaryText: transcriptionRecord.summaryText?.substring(0, 50) + '...',
+        summaryStatus: transcriptionRecord.summaryStatus,
+        isPlaceholderSummary: transcriptionRecord.isPlaceholderSummary,
+        transcriptionStatus: transcriptionRecord.status
+      });
+    }
+  }, [transcriptionRecord]);
+
+  // Add polling mechanism to check for updates to the transcription record
+  useEffect(() => {
+    // Skip if no transcription ID
+    if (!currentTranscriptionId) {
+      return;
+    }
+
+    console.log('Setting up polling for transcription updates:', currentTranscriptionId);
+    
+    // Function to fetch the latest transcription data
+    const fetchLatestTranscriptionData = async () => {
+      try {
+        console.log('Polling for latest transcription data:', currentTranscriptionId);
+        
+        const { data, error } = await supabase
+          .from('transcriptions')
+          .select('id, status, transcription_text, summary_text, summary_status, analysis_data, analysis_status, file_name, media_path, media_url, user_id, created_at, updated_at')
+          .eq('id', currentTranscriptionId)
+          .single();
+          
+        if (error) {
+          console.error('Error polling for transcription updates:', error);
+          return false;
+        }
+        
+        if (data) {
+          console.log('Received updated transcription data:', {
+            id: data.id,
+            status: data.status,
+            hasSummary: !!data.summary_text,
+            summaryStatus: data.summary_status,
+            hasAnalysis: !!data.analysis_data,
+            analysisStatus: data.analysis_status,
+            updatedAt: data.updated_at
+          });
+          
+          // Map the database record to our frontend format
+          const mappedRecord = mapDbRecordToTranscriptionRecord(data);
+          
+          // Update the transcription record in state
+          setTranscriptionRecord(prev => {
+            // Only update if we have new data that's different from what we already have
+            if (!prev || 
+                prev.status !== mappedRecord.status || 
+                prev.summaryStatus !== mappedRecord.summaryStatus || 
+                prev.analysisStatus !== mappedRecord.analysisStatus ||
+                (mappedRecord.summaryText && !prev.summaryText) ||
+                (mappedRecord.analysisData && !prev.analysisData)) {
+              
+              console.log('Updating transcription record with new data');
+              return mappedRecord;
+            }
+            
+            return prev;
+          });
+          
+          // If everything is complete, stop polling
+          if (data.status === 'completed' && 
+              data.summary_status === 'completed' && 
+              data.analysis_status === 'completed' &&
+              data.summary_text && 
+              data.analysis_data) {
+            console.log('All processing complete, stopping polling');
+            return true; // Signal to stop polling
+          }
+        }
+        
+        return false; // Continue polling
+      } catch (error) {
+        console.error('Error in polling function:', error);
+        return false;
+      }
+    };
+    
+    // Set up polling interval
+    const pollInterval = setInterval(async () => {
+      try {
+        const shouldStop = await fetchLatestTranscriptionData();
+        if (shouldStop) {
+          console.log('Stopping transcription polling');
+          clearInterval(pollInterval);
+        }
+      } catch (error) {
+        console.error('Error during polling interval:', error);
+      }
+    }, 5000); // Poll every 5 seconds
+    
+    // Initial fetch immediately
+    fetchLatestTranscriptionData();
+    
+    // Clean up interval on unmount
+    return () => {
+      console.log('Cleaning up transcription polling interval');
+      clearInterval(pollInterval);
+    };
+  }, [currentTranscriptionId, supabase]);
+
+  useEffect(() => {
+    const autoProcessTranscription = async () => {
+      // Skip if no transcription record or if it doesn't have both ID and text
+      if (!transcriptionRecord || !transcriptionRecord.id || !transcriptionRecord.transcriptionText) {
+        return;
+      }
+      
+      console.log('Transcription available, checking if summary and analysis need to be generated');
+      
+      // Check authentication first
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        console.log('Authentication required for auto-processing - user is not logged in');
+        return; // Exit early without error if not authenticated
+      }
+      
+      // Auto-generate summary if it's not already summarized or in progress
+      if ((!transcriptionRecord.summaryText || transcriptionRecord.isPlaceholderSummary) && 
+          transcriptionRecord.summaryStatus !== 'processing') {
+        console.log('Auto-triggering summary for transcription:', transcriptionRecord.id);
+        try {
+          await generateSummaryForTranscription(transcriptionRecord.id, transcriptionRecord.transcriptionText);
+        } catch (error) {
+          console.error('Auto-summary generation failed:', error);
+        }
+      }
+      
+      // Auto-generate analysis if it's not already analyzed or in progress
+      if (!transcriptionRecord.analysisData && 
+          transcriptionRecord.analysisStatus !== 'processing') {
+        console.log('Auto-triggering analysis for transcription:', transcriptionRecord.id);
+        try {
+          await requestAnalysis(transcriptionRecord.id);
+        } catch (error) {
+          console.error('Auto-analysis generation failed:', error);
+        }
+      }
+    };
+    
+    // Only run if transcription record has changed and has valid data
+    if (transcriptionRecord && transcriptionRecord.id && transcriptionRecord.transcriptionText) {
+      autoProcessTranscription();
+    }
+    
+    // Explicitly list all external functions in the dependency array
+    // but exclude the transcriptionRecord.transcriptionText to prevent infinite loops
+  }, [
+    transcriptionRecord?.id, 
+    transcriptionRecord?.status,
+    transcriptionRecord?.summaryStatus,
+    transcriptionRecord?.analysisStatus,
+    generateSummaryForTranscription, 
+    requestAnalysis, 
+    supabase
+  ]);
+
   return (
     <div className="container mx-auto px-4 py-6 max-w-4xl">
       <h1 className="text-3xl font-bold mb-6 bg-gradient-to-r from-indigo-500 to-purple-600 bg-clip-text text-transparent">InsightAI - Customer Interview Analysis</h1>
