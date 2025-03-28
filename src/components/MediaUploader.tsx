@@ -1653,48 +1653,58 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
 
   const renderStatusBanner = () => {
     let statusMessage = '';
-    let icon = null;
-    let bgColor = '';
-    let textColor = '';
-    let borderColor = '';
+    let statusClass = 'info';
     
-    if (isAnalyzing || transcriptionRecord?.analysisStatus === 'processing') {
-      statusMessage = 'Analyzing the interview content...';
-      icon = <Sparkles className="w-5 h-5 mr-2" />;
-      bgColor = 'bg-amber-50';
-      textColor = 'text-amber-700';
-      borderColor = 'border-amber-200';
-    } else if (isSummarizing || transcriptionRecord?.summaryStatus === 'processing') {
-      statusMessage = 'Generating summary...';
-      icon = <FileText className="w-5 h-5 mr-2" />;
-      bgColor = 'bg-blue-50';
-      textColor = 'text-blue-700';
-      borderColor = 'border-blue-200';
-    } else if (transcriptionRecord?.summaryText && transcriptionRecord?.analysisData && transcriptionRecord?.analysisStatus === 'completed') {
-      statusMessage = `${transcriptionRecord.fileName}: Transcription, summary and analysis complete.`;
-      icon = <CheckCircle className="w-5 h-5 mr-2" />;
-      bgColor = 'bg-green-50';
-      textColor = 'text-green-700';
-      borderColor = 'border-green-200';
-    } else if (transcriptionRecord?.summaryText) {
-      statusMessage = `${transcriptionRecord.fileName}: Transcription and summary complete.`;
-      icon = <CheckCircle className="w-5 h-5 mr-2" />;
-      bgColor = 'bg-green-50';
-      textColor = 'text-green-700';
-      borderColor = 'border-green-200';
-    } else {
-      statusMessage = `${transcriptionRecord?.fileName}: Transcription complete.`;
-      icon = <CheckCircle className="w-5 h-5 mr-2" />;
-      bgColor = 'bg-green-50';
-      textColor = 'text-green-700';
-      borderColor = 'border-green-200';
+    // Determine the current status based on the state of the transcription
+    if (isUploading) {
+      statusMessage = 'Uploading your media file...';
+    } else if (isTranscribing) {
+      statusMessage = 'Transcribing your audio...';
+    } else if (transcriptionRecord?.status === 'processing') {
+      statusMessage = 'Transcription in progress...';
+    } else if (transcriptionRecord?.status === 'completed') {
+      // Only show meaningful status updates for summary and analysis
+      // to prevent UI flickering
+      if (transcriptionRecord.summaryStatus === 'processing') {
+        // Don't show intermediate summary status to prevent flickering
+        statusMessage = 'Processing your transcription...';
+      } else if (transcriptionRecord.analysisStatus === 'processing') {
+        // Don't show intermediate analysis status to prevent flickering
+        statusMessage = 'Processing your transcription...';
+      } else if (transcriptionRecord.summaryStatus === 'error') {
+        statusMessage = 'Error generating summary. Please try again.';
+        statusClass = 'error';
+      } else if (transcriptionRecord.analysisStatus === 'error') {
+        statusMessage = 'Error analyzing content. Please try again.';
+        statusClass = 'error';
+      } else if (transcriptionRecord.status === 'error') {
+        statusMessage = 'Error processing transcription. Please try again.';
+        statusClass = 'error';
+      }
+    } else if (transcriptionRecord?.status === 'error') {
+      statusMessage = 'Error processing transcription. Please try again.';
+      statusClass = 'error';
+    }
+    
+    // Only render the banner if there's a message to display
+    if (!statusMessage) {
+      return null;
     }
     
     return (
-      <div className={`mb-6 p-4 rounded-lg border ${bgColor} ${borderColor} shadow-sm`}>
-        <div className={`flex items-center ${textColor}`}>
-          {icon}
-          <span className="font-medium">{statusMessage}</span>
+      <div className={`status-banner ${statusClass}`}>
+        <div className="status-message">
+          {statusMessage}
+          {(isUploading || isTranscribing || 
+            transcriptionRecord?.status === 'processing' ||
+            transcriptionRecord?.summaryStatus === 'processing' ||
+            transcriptionRecord?.analysisStatus === 'processing') && (
+            <span className="loading-dots">
+              <span className="dot">.</span>
+              <span className="dot">.</span>
+              <span className="dot">.</span>
+            </span>
+          )}
         </div>
       </div>
     );
@@ -2062,9 +2072,22 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
         return; // Exit early without error if not authenticated
       }
       
+      // Verify that the transcription is fully complete, not just a placeholder
+      const transcriptionText = transcriptionRecord.transcriptionText || '';
+      const isPlaceholderOrProcessing = 
+        transcriptionText.length < 100 || 
+        transcriptionText.includes('processing your audio') ||
+        transcriptionText.includes('transcription in progress');
+        
+      if (isPlaceholderOrProcessing) {
+        console.log('Transcription appears to be incomplete or a placeholder, delaying auto-processing');
+        return;
+      }
+      
       // Auto-generate summary if it's not already summarized or in progress
       if ((!transcriptionRecord.summaryText || transcriptionRecord.isPlaceholderSummary) && 
-          transcriptionRecord.summaryStatus !== 'processing') {
+          transcriptionRecord.summaryStatus !== 'processing' && 
+          transcriptionRecord.status === 'completed') {
         console.log('Auto-triggering summary for transcription:', transcriptionRecord.id);
         try {
           await generateSummaryForTranscription(transcriptionRecord.id, transcriptionRecord.transcriptionText);
@@ -2074,774 +2097,12 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       }
       
       // Auto-generate analysis if it's not already analyzed or in progress
+      // Only if summary is complete and transcription is fully complete
       if (!transcriptionRecord.analysisData && 
-          transcriptionRecord.analysisStatus !== 'processing') {
-        console.log('Auto-triggering analysis for transcription:', transcriptionRecord.id);
-        try {
-          await requestAnalysis(transcriptionRecord.id);
-        } catch (error) {
-          console.error('Auto-analysis generation failed:', error);
-        }
-      }
-    };
-    
-    // Only run if transcription record has changed and has valid data
-    if (transcriptionRecord && transcriptionRecord.id && transcriptionRecord.transcriptionText) {
-      autoProcessTranscription();
-    }
-    
-    // Explicitly list all external functions in the dependency array
-    // but exclude the transcriptionRecord.transcriptionText to prevent infinite loops
-  }, [
-    transcriptionRecord?.id, 
-    transcriptionRecord?.status,
-    transcriptionRecord?.summaryStatus,
-    transcriptionRecord?.analysisStatus,
-    generateSummaryForTranscription, 
-    requestAnalysis, 
-    supabase
-  ]);
-
-  useEffect(() => {
-    const checkAuth = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) {
-        setShowAuthPrompt(true);
-      } else {
-        setShowAuthPrompt(false);
-      }
-    };
-
-    checkAuth();
-
-    // Listen for auth state changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
-      if (event === 'SIGNED_OUT') {
-        setShowAuthPrompt(true);
-        // Clear any sensitive data when user signs out
-        setTranscriptionRecord(null);
-        setSelectedFile(null);
-      } else if (event === 'SIGNED_IN') {
-        setShowAuthPrompt(false);
-      }
-    });
-
-    return () => {
-      subscription.unsubscribe();
-    };
-  }, [supabase]);
-
-  // Call the debug function when the component mounts or when the transcription record changes
-  useEffect(() => {
-    if (transcriptionRecord?.id) {
-      console.log('Transcription record changed, checking summary status...');
-      debugCheckSummaryStatus(transcriptionRecord.id);
-    }
-  }, [transcriptionRecord?.id]);
-
-  // Cleanup function for component unmount
-  useEffect(() => {
-    // Return cleanup function to handle component unmounting
-    return () => {
-      // Cancel any in-progress operations if component unmounts
-      setIsUploading(false);
-      setIsTranscribing(false);
-      setIsSummarizing(false);
-      setIsAnalyzing(false);
-    };
-  }, []);
-
-  const saveSummaryData = async (transcriptionId: string, summaryData: any) => {
-    console.log('Saving summary data for transcription:', transcriptionId);
-    setLoadingState('saving');
-    
-    try {
-      // Get the current session to retrieve the access token
-      const { data: { session } } = await supabase.auth.getSession();
-      
-      if (!session || !session.access_token) {
-        throw new Error('You must be logged in to save summary data. Please sign in and try again.');
-      }
-      
-      // Call the API to save the summary data
-      const response = await fetch('/api/transcription/update-summary', {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`
-        },
-        body: JSON.stringify({
-          transcriptionId,
-          summaryData
-        }),
-      });
-      
-      // Clone the response for potential error handling
-      const responseClone = response.clone();
-      
-      if (!response.ok) {
-        let errorMessage = 'Failed to save summary data';
-        
-        try {
-          const errorData = await response.json();
-          errorMessage = errorData.error || errorMessage;
-        } catch (jsonError: any) {
-          try {
-            const errorText = await responseClone.text();
-            console.error('Raw error response:', errorText);
-            
-            // Check for rate limit errors in the text
-            if (errorText.includes('rate limit') || errorText.includes('429')) {
-              console.log('Rate limit reached, will retry in 10 seconds');
-              setErrorMessage('OpenAI rate limit reached. Retrying in 10 seconds...');
-              
-              // Keep the summarizing state but update UI to show waiting
-              setSummaryStatus('waiting');
-              
-              // Set a timeout to retry after 10 seconds
-              setTimeout(() => {
-                console.log('Retrying summary generation after rate limit cooldown');
-                setSummaryRequestInProgress(false);
-                generateSummaryForTranscription(transcriptionId, '');
-              }, 10000);
-              
-              return;
-            }
-            
-            setErrorMessage(errorText || 'Failed to save summary data');
-          } catch (textError) {
-            // If all else fails, use the status text
-            setErrorMessage(`Error ${response.status}: ${response.statusText || 'Unknown error'}`);
-          }
-        }
-        
-        throw new Error(errorMessage);
-      }
-      
-      try {
-        const data = await response.json();
-        console.log('Summary data saved successfully:', data);
-        setUpdateMessage('Summary saved successfully');
-        return true;
-      } catch (error: any) {
-        console.error('Error parsing save summary response:', error);
-        
-        // If JSON parsing fails, try to read the response as text
-        try {
-          const textResponse = await responseClone.text();
-          console.error('Raw save summary response:', textResponse);
-          throw new Error('Invalid response from server. Please try again.');
-        } catch (textError) {
-          console.error('Error reading save summary response text:', textError);
-          throw new Error('Failed to read save summary response');
-        }
-      }
-    } catch (error: any) {
-      console.error('Error saving summary data:', error);
-      setErrorMessage(`Failed to save summary data: ${error.message || 'Unknown error'}`);
-      return false;
-    } finally {
-      setLoadingState('idle');
-    }
-  };
-
-  const saveAnalysisData = async (transcriptionId: string, analysisData: any): Promise<boolean> => {
-    try {
-      console.log('Saving analysis data to database for transcription:', transcriptionId);
-      
-      // Get the current session
-      const { data: { session } } = await supabase.auth.getSession();
-      
-      if (!session || !session.access_token) {
-        console.error('No access token available for saving analysis data');
-        return false;
-      }
-      
-      // Make the API call to save the analysis data
-      const response = await fetch('/api/transcription/update-analysis', {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`
-        },
-        body: JSON.stringify({
-          transcriptionId,
-          analysisData,
-          analysisStatus: 'completed'
-        })
-      });
-      
-      // Clone the response for potential error handling
-      const responseClone = response.clone();
-      
-      if (!response.ok) {
-        // Clone the response so we can read it multiple times if needed
-        const responseClone = response.clone();
-        
-        let errorData: { error: string; details: string | null } = { 
-          error: 'Unknown error', 
-          details: null 
-        };
-        
-        try {
-          errorData = await response.json();
-        } catch (jsonError: any) {
-          try {
-            const responseText = await responseClone.text();
-            console.error('Raw error response:', responseText.substring(0, 200)); // Log first 200 chars
-            errorData = {
-              error: 'Server error',
-              details: responseText.substring(0, 100)
-            };
-          } catch (textError) {
-            console.error('Failed to read error response:', textError);
-          }
-        }
-        
-        // Check if this is an authentication error
-        const isAuthError = response.status === 401 || 
-                           errorData.error?.toLowerCase().includes('auth') || 
-                           errorData.error?.toLowerCase().includes('token') || 
-                           errorData.error?.toLowerCase().includes('permission');
-        
-        // If it's an auth error, try to refresh the token and retry
-        if (isAuthError) {
-          console.log('Authentication error detected when saving analysis, attempting to refresh session...');
-          
-          try {
-            // Try to refresh the session
-            const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
-            
-            if (refreshError) {
-              console.error('Failed to refresh session:', refreshError);
-              setErrorMessage('Your session has expired. Please sign in again.');
-              return false;
-            }
-            
-            if (refreshData.session) {
-              console.log('Session refreshed, retrying analysis save...');
-              
-              // Retry the API call with the new token
-              const retryResponse = await fetch('/api/transcription/update-analysis', {
-                method: 'PUT',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Authorization': `Bearer ${refreshData.session.access_token}`
-                },
-                body: JSON.stringify({
-                  transcriptionId,
-                  analysisData,
-                  analysisStatus: 'completed'
-                })
-              });
-              
-              if (!retryResponse.ok) {
-                throw new Error('Failed to save analysis data even after refreshing session');
-              }
-              
-              // Process the successful response
-              const data = await retryResponse.json();
-              console.log('Analysis data saved successfully after session refresh:', data);
-              return true;
-            }
-          } catch (refreshError) {
-            console.error('Error during session refresh or retry:', refreshError);
-          }
-        }
-        
-        const errorMessage = errorData.error || 'Failed to save analysis data';
-        console.error('Error saving analysis data:', errorMessage);
-        setErrorMessage(errorMessage);
-        return false;
-      }
-      
-      const data = await response.json();
-      
-      console.log('Analysis data saved successfully:', data);
-      setErrorMessage(null);
-      return true;
-    } catch (error: any) {
-      console.error('Exception saving analysis data:', error);
-      setErrorMessage('Failed to save analysis data: ' + (error.message || 'Unknown error'));
-      return false;
-    }
-  };
-
-  // Debug function to check summary status directly from the database
-  const debugCheckSummaryStatus = async (transcriptionId: string) => {
-    if (!transcriptionId) return;
-    
-    try {
-      console.log('DEBUG: Checking summary status for ID:', transcriptionId);
-      const { data: record, error } = await supabase
-        .from('transcriptions')
-        .select('id, summary_text, summary_status')
-        .eq('id', transcriptionId)
-        .single();
-        
-      if (error) {
-        console.error('DEBUG: Error fetching summary status:', error.message);
-        return;
-      }
-      
-      if (!record) {
-        console.log('DEBUG: No record found with ID:', transcriptionId);
-        return;
-      }
-      
-      // Determine if this is likely a placeholder summary based on the text content
-      const summaryText = record.summary_text || '';
-      const isPlaceholderSummary = summaryText.includes('processing message') || 
-                                   summaryText.includes('wait for the complete transcription');
-      
-      console.log('DEBUG: Database summary status:', {
-        id: record.id,
-        summary_text: record.summary_text?.substring(0, 50) + '...',
-        summary_status: record.summary_status,
-        detected_placeholder: isPlaceholderSummary
-      });
-    } catch (error) {
-      console.error('DEBUG: Error checking summary status:', error);
-    }
-  };
-
-  useEffect(() => {
-    const autoGenerateWhenTranscriptionAvailable = async () => {
-      // Only proceed if we have a valid transcription record with ID and text
-      if (!transcriptionRecord || !transcriptionRecord.id || !transcriptionRecord.transcriptionText) {
-        console.log('Skipping auto-generation: Missing transcription ID or text');
-        return;
-      }
-      
-      console.log('Transcription available, checking if summary and analysis need to be generated');
-      
-      // Check authentication first
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) {
-        console.log('Authentication required for auto-generation - user is not logged in');
-        return; // Exit early without error if not authenticated
-      }
-      
-      // Auto-generate summary if needed
-      if ((!transcriptionRecord.summaryText || transcriptionRecord.isPlaceholderSummary) && 
-          transcriptionRecord.summaryStatus !== 'processing') {
-        console.log('Auto-generating summary for available transcription');
-        try {
-          await generateSummaryForTranscription(
-            transcriptionRecord.id, 
-            transcriptionRecord.transcriptionText
-          );
-        } catch (error) {
-          console.error('Auto-summary generation failed:', error);
-        }
-      }
-      
-      // Auto-generate analysis if needed
-      if (!transcriptionRecord.analysisData && 
-          transcriptionRecord.analysisStatus !== 'processing') {
-        console.log('Auto-generating analysis for available transcription');
-        try {
-          await requestAnalysis(transcriptionRecord.id);
-        } catch (error) {
-          console.error('Auto-analysis generation failed:', error);
-        }
-      }
-    };
-    
-    // Only run the effect if we have a valid transcription record
-    if (transcriptionRecord && transcriptionRecord.id && transcriptionRecord.transcriptionText) {
-      autoGenerateWhenTranscriptionAvailable();
-    }
-    
-    // Explicitly list all external functions in the dependency array
-    // but exclude the transcriptionRecord.transcriptionText to prevent infinite loops
-  }, [
-    transcriptionRecord?.id, 
-    transcriptionRecord?.status,
-    transcriptionRecord?.summaryStatus,
-    transcriptionRecord?.analysisStatus,
-    generateSummaryForTranscription, 
-    requestAnalysis, 
-    supabase
-  ]);
-
-  const handleAnalyzeTranscription = async () => {
-    if (!transcriptionRecord || !transcriptionRecord.id) {
-      console.error('Cannot analyze: No transcription record available');
-      return;
-    }
-    
-    // Skip if already analyzing
-    if (isAnalyzing) {
-      console.log('Analysis already in progress, skipping duplicate request');
-      return;
-    }
-    
-    console.log('Starting analysis for transcription:', transcriptionRecord.id);
-    setIsAnalyzing(true);
-    setAnalysisStatus('processing');
-    
-    try {
-      // Get a fresh token for authentication
-      const authToken = await getAuthToken();
-      if (!authToken) {
-        console.error('Failed to get auth token for analysis');
-        setAnalysisError('Authentication error. Please sign in again.');
-        setAnalysisStatus('error');
-        setIsAnalyzing(false);
-        return;
-      }
-      
-      console.log('Sending analysis request to API...');
-      
-      // Create an AbortController for timeout handling
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minute timeout
-      
-      try {
-        // Make the API request with the signal from AbortController
-        const response = await fetch('/api/analyze', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${authToken}`
-          },
-          body: JSON.stringify({
-            transcriptionId: transcriptionRecord.id,
-            // Include the text directly to avoid database lookups
-            transcriptionText: transcriptionRecord.transcriptionText,
-            cacheBuster: Date.now() // Add cache-busting timestamp
-          }),
-          signal: controller.signal
-        });
-        
-        // Clear the timeout
-        clearTimeout(timeoutId);
-        
-        console.log('Analysis API response status:', response.status);
-        
-        // Clone the response for potential error handling
-        const responseClone = response.clone();
-        
-        if (!response.ok) {
-          let errorMessage = 'Failed to analyze transcription';
-          
-          try {
-            // Try to parse as JSON first
-            const errorData = await response.json();
-            console.error('Analysis API error:', errorData);
-            errorMessage = errorData.error || errorData.message || errorMessage;
-            
-            // Check if this is a "still processing" response (202 status)
-            if (response.status === 202 && errorData.isPartial) {
-              console.log('Transcription still processing, cannot analyze yet');
-              setAnalysisStatus('pending');
-              setIsAnalyzing(false);
-              return;
-            }
-          } catch (jsonError) {
-            // If JSON parsing fails, try to get the text
-            try {
-              const errorText = await responseClone.text();
-              console.error('Analysis API error (text):', errorText);
-              errorMessage = errorText || errorMessage;
-            } catch (textError) {
-              console.error('Failed to read error response:', textError);
-            }
-          }
-          
-          // Check if this is an authentication error
-          if (response.status === 401 || errorMessage.includes('authentication') || errorMessage.includes('sign in')) {
-            console.log('Authentication error detected, attempting to refresh session...');
-            const refreshed = await refreshSession();
-            
-            if (refreshed) {
-              console.log('Session refreshed, retrying analysis...');
-              // Try again with the refreshed session
-              setIsAnalyzing(false);
-              setTimeout(() => handleAnalyzeTranscription(), 1000);
-              return;
-            }
-          }
-          
-          // If we get here, it's a real error
-          console.error(`Analysis failed: ${errorMessage}`);
-          setAnalysisError(errorMessage);
-          setAnalysisStatus('error');
-          setIsAnalyzing(false);
-          return;
-        }
-        
-        // Parse the successful response
-        try {
-          const data = await response.json();
-          console.log('Analysis completed successfully:', data.success);
-          
-          if (data.analysis) {
-            console.log('Analysis data received:', Object.keys(data.analysis).join(', '));
-            setAnalysisData(data.analysis);
-            setAnalysisStatus('completed');
-            
-            // Verify the data was saved to the database
-            console.log('Verifying analysis data was saved to database...');
-            try {
-              const { data: dbRecord, error: dbError } = await supabase
-                .from('transcriptions')
-                .select('id, analysis_status, analysis_data')
-                .eq('id', transcriptionRecord.id)
-                .single();
-                
-              if (dbError) {
-                console.error('Error verifying analysis data:', dbError);
-              } else {
-                console.log('Database record analysis status:', dbRecord.analysis_status);
-                console.log('Database has analysis data:', !!dbRecord.analysis_data);
-                
-                // If the database doesn't have the analysis data, try to save it manually
-                if (!dbRecord.analysis_data && data.analysis) {
-                  console.log('Analysis data missing in database, saving manually...');
-                  const formattedData = formatAnalysisDataForDb(data.analysis);
-                  const { error: manualUpdateError } = await supabase
-                    .from('transcriptions')
-                    .update({
-                      analysis_data: formattedData,
-                      analysis_status: 'completed',
-                      updated_at: new Date().toISOString()
-                    })
-                    .eq('id', transcriptionRecord.id);
-                  
-                  if (manualUpdateError) {
-                    console.error('Failed to manually save analysis data:', manualUpdateError);
-                  } else {
-                    console.log('Analysis data manually saved to database');
-                  }
-                }
-              }
-            } catch (verifyError) {
-              console.error('Error during database verification:', verifyError);
-            }
-          } else {
-            console.error('Analysis response missing analysis data');
-            setAnalysisError('Analysis completed but no data was returned');
-            setAnalysisStatus('error');
-          }
-        } catch (parseError) {
-          console.error('Error parsing analysis response:', parseError);
-          setAnalysisError('Failed to parse analysis results');
-          setAnalysisStatus('error');
-        }
-      } catch (fetchError: any) {
-        // Clear the timeout if it hasn't fired yet
-        clearTimeout(timeoutId);
-        
-        // Handle abort/timeout specifically
-        if (fetchError.name === 'AbortError') {
-          console.error('Analysis request timed out after 2 minutes');
-          setAnalysisError('Analysis timed out. The server took too long to respond.');
-        } else {
-          console.error('Error during analysis fetch:', fetchError);
-          setAnalysisError(fetchError.message || 'Network error during analysis');
-        }
-        
-        setAnalysisStatus('error');
-      }
-    } catch (error: any) {
-      console.error('Unexpected error during analysis:', error);
-      setAnalysisError(error.message || 'An unexpected error occurred');
-      setAnalysisStatus('error');
-    } finally {
-      setIsAnalyzing(false);
-    }
-  };
-
-  useEffect(() => {
-    if (transcriptionRecord) {
-      console.log('TranscriptionRecord updated:', {
-        id: transcriptionRecord.id,
-        summaryText: transcriptionRecord.summaryText?.substring(0, 50) + '...',
-        summaryStatus: transcriptionRecord.summaryStatus,
-        isPlaceholderSummary: transcriptionRecord.isPlaceholderSummary,
-        transcriptionStatus: transcriptionRecord.status
-      });
-    }
-  }, [transcriptionRecord]);
-
-  // Add polling mechanism to check for updates to the transcription record
-  useEffect(() => {
-    // Skip if no transcription ID
-    if (!currentTranscriptionId) {
-      return;
-    }
-
-    console.log('Setting up polling for transcription updates:', currentTranscriptionId);
-    
-    // Keep track of API call attempts to prevent duplicates
-    const apiCallTracker = {
-      summaryCalled: false,
-      analysisCalled: false
-    };
-    
-    // Function to fetch the latest transcription data
-    const fetchLatestTranscriptionData = async () => {
-      try {
-        console.log('Polling for latest transcription data:', currentTranscriptionId);
-        
-        const { data, error } = await supabase
-          .from('transcriptions')
-          .select('id, status, transcription_text, summary_text, summary_status, analysis_data, analysis_status, file_name, media_path, media_url, user_id, created_at, updated_at')
-          .eq('id', currentTranscriptionId)
-          .single();
-          
-        if (error) {
-          console.error('Error polling for transcription updates:', error);
-          return false;
-        }
-        
-        if (data) {
-          // Only log when there are meaningful changes
-          const hasSummary = !!data.summary_text;
-          const hasAnalysis = !!data.analysis_data;
-          const isComplete = data.status === 'completed' && 
-                           data.summary_status === 'completed' && 
-                           data.analysis_status === 'completed' &&
-                           hasSummary && 
-                           hasAnalysis;
-          
-          console.log('Received updated transcription data:', {
-            id: data.id,
-            status: data.status,
-            hasSummary,
-            summaryStatus: data.summary_status,
-            hasAnalysis,
-            analysisStatus: data.analysis_status,
-            isComplete
-          });
-          
-          // Map the database record to our frontend format
-          const mappedRecord = mapDbRecordToTranscriptionRecord(data);
-          
-          // Update the transcription record in state
-          setTranscriptionRecord(prev => {
-            // Only update if we have new data that's different from what we already have
-            // This prevents unnecessary re-renders
-            if (!prev) return mappedRecord;
-            
-            const hasStatusChange = prev.status !== mappedRecord.status;
-            const hasSummaryStatusChange = prev.summaryStatus !== mappedRecord.summaryStatus;
-            const hasAnalysisStatusChange = prev.analysisStatus !== mappedRecord.analysisStatus;
-            const hasSummaryTextChange = !prev.summaryText && mappedRecord.summaryText;
-            const hasAnalysisDataChange = !prev.analysisData && mappedRecord.analysisData;
-            
-            const hasChanges = hasStatusChange || 
-                             hasSummaryStatusChange || 
-                             hasAnalysisStatusChange || 
-                             hasSummaryTextChange || 
-                             hasAnalysisDataChange;
-            
-            if (hasChanges) {
-              console.log('Updating transcription record with new data');
-              return mappedRecord;
-            }
-            
-            return prev;
-          });
-          
-          // Check if we need to trigger summary or analysis
-          // Only trigger if not already called and not already completed
-          if (data.status === 'completed' && !data.summary_text && 
-              data.summary_status !== 'processing' && !apiCallTracker.summaryCalled) {
-            console.log('Triggering summary generation from polling');
-            apiCallTracker.summaryCalled = true;
-            try {
-              await generateSummaryForTranscription(data.id, data.transcription_text || '');
-            } catch (error) {
-              console.error('Error triggering summary from polling:', error);
-            }
-          }
-          
-          if (data.status === 'completed' && data.summary_status === 'completed' && 
-              !data.analysis_data && data.analysis_status !== 'processing' && 
-              !apiCallTracker.analysisCalled) {
-            console.log('Triggering analysis from polling');
-            apiCallTracker.analysisCalled = true;
-            try {
-              await requestAnalysis(data.id);
-            } catch (error) {
-              console.error('Error triggering analysis from polling:', error);
-            }
-          }
-          
-          // If everything is complete, stop polling
-          if (isComplete) {
-            console.log('All processing complete, stopping polling');
-            return true; // Signal to stop polling
-          }
-        }
-        
-        return false; // Continue polling
-      } catch (error) {
-        console.error('Error in polling function:', error);
-        return false;
-      }
-    };
-    
-    // Set up polling interval with a longer delay (15 seconds instead of 5)
-    const pollInterval = setInterval(async () => {
-      try {
-        const shouldStop = await fetchLatestTranscriptionData();
-        if (shouldStop) {
-          console.log('Stopping transcription polling');
-          clearInterval(pollInterval);
-        }
-      } catch (error) {
-        console.error('Error during polling interval:', error);
-      }
-    }, 15000); // Poll every 15 seconds instead of 5
-    
-    // Initial fetch after a short delay to allow the UI to stabilize
-    const initialFetchTimeout = setTimeout(() => {
-      fetchLatestTranscriptionData();
-    }, 2000);
-    
-    // Clean up interval and timeout on unmount
-    return () => {
-      console.log('Cleaning up transcription polling interval');
-      clearInterval(pollInterval);
-      clearTimeout(initialFetchTimeout);
-    };
-  }, [currentTranscriptionId, supabase, generateSummaryForTranscription, requestAnalysis]);
-
-  // Modify the auto-processing effect to avoid duplicate API calls
-  useEffect(() => {
-    const autoProcessTranscription = async () => {
-      // Skip if no transcription record or if it doesn't have both ID and text
-      if (!transcriptionRecord || !transcriptionRecord.id || !transcriptionRecord.transcriptionText) {
-        return;
-      }
-      
-      console.log('Transcription available, checking if summary and analysis need to be generated');
-      
-      // Check authentication first
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) {
-        console.log('Authentication required for auto-processing - user is not logged in');
-        return; // Exit early without error if not authenticated
-      }
-      
-      // Auto-generate summary if it's not already summarized or in progress
-      if ((!transcriptionRecord.summaryText || transcriptionRecord.isPlaceholderSummary) && 
-          transcriptionRecord.summaryStatus !== 'processing') {
-        console.log('Auto-triggering summary for transcription:', transcriptionRecord.id);
-        try {
-          await generateSummaryForTranscription(transcriptionRecord.id, transcriptionRecord.transcriptionText);
-        } catch (error) {
-          console.error('Auto-summary generation failed:', error);
-        }
-      }
-      
-      // Auto-generate analysis if it's not already analyzed or in progress
-      if (!transcriptionRecord.analysisData && 
-          transcriptionRecord.analysisStatus !== 'processing') {
+          transcriptionRecord.analysisStatus !== 'processing' &&
+          transcriptionRecord.summaryStatus === 'completed' &&
+          transcriptionRecord.summaryText &&
+          transcriptionRecord.status === 'completed') {
         console.log('Auto-triggering analysis for transcription:', transcriptionRecord.id);
         try {
           await requestAnalysis(transcriptionRecord.id);
