@@ -194,7 +194,7 @@ export async function POST(request: NextRequest) {
     let findError: any; // Type as 'any' to fix TypeScript errors
     
     try {
-      console.log(`Looking for transcription with Rev AI job ID: "${jobId}"`);
+      console.log(`Job ID type: ${typeof jobId}, value: ${jobId}, length: ${jobId.length}`);
       
       // First, check if the job ID exists in any records
       const { data: allTranscriptions, error: checkError } = await supabaseAdmin!
@@ -235,6 +235,9 @@ export async function POST(request: NextRequest) {
       
       const result = await retryOperation(async () => {
         console.log(`Executing database query to find transcription with Rev AI job ID: "${jobId}"`);
+        console.log(`Raw job ID for query: ${jobId}, type: ${typeof jobId}, length: ${jobId.length}`);
+        
+        // Try a direct query first
         const { data, error } = await supabaseAdmin!
           .from('transcriptions')
           .select('id, status')
@@ -246,6 +249,34 @@ export async function POST(request: NextRequest) {
         }
         
         console.log(`Query results for Rev AI job ID "${jobId}":`, data);
+        
+        // If no results, try a case-insensitive query
+        if (!data || data.length === 0) {
+          console.log('No results with exact match, trying case-insensitive query');
+          
+          // Try a direct query with case-insensitive comparison
+          try {
+            // Try a raw SQL query with ILIKE for case-insensitive matching
+            const { data: likeData, error: likeError } = await supabaseAdmin!
+              .from('transcriptions')
+              .select('id, status')
+              .ilike('rev_ai_job_id', jobId)
+              .limit(1);
+            
+            if (likeError) {
+              console.error('Error with case-insensitive job ID query:', likeError);
+            } else if (likeData && likeData.length > 0) {
+              console.log('Found results with case-insensitive query:', likeData);
+              return likeData.map(item => ({
+                id: String(item.id),
+                status: String(item.status)
+              }));
+            }
+          } catch (fuzzyError) {
+            console.error('Error during fuzzy job ID lookup:', fuzzyError);
+          }
+        }
+        
         return data;
       }, 3, 1000);
       
@@ -265,11 +296,11 @@ export async function POST(request: NextRequest) {
         
         try {
           // Extract the base filename without timestamp prefix if it follows the pattern
-          let searchPattern = filename;
+          let baseFilename = filename;
           const timestampMatch = filename.match(/^\d+-(.+)$/);
           if (timestampMatch && timestampMatch[1]) {
-            searchPattern = `%${timestampMatch[1]}`;
-            console.log(`Extracted base filename for search: "${timestampMatch[1]}"`);
+            baseFilename = timestampMatch[1];
+            console.log(`Extracted base filename for search: "${baseFilename}"`);
           }
           
           // Search for transcriptions with similar filenames
@@ -285,7 +316,7 @@ export async function POST(request: NextRequest) {
             .from('transcriptions')
             .select('id, status, file_name, media_path, created_at')
             .order('created_at', { ascending: false })
-            .limit(5);
+            .limit(10);
             
           if (filenameError) {
             console.error('Error in fallback filename lookup:', filenameError);
@@ -293,30 +324,82 @@ export async function POST(request: NextRequest) {
             console.log(`Found ${filenameMatches.length} recent transcriptions to check:`);
             
             // Log all potential matches
+            const matchedTranscriptions: TranscriptionRecord[] = [];
+            
             (filenameMatches as TranscriptionRecord[]).forEach(match => {
               console.log(`- ID: ${match.id}, Filename: "${match.file_name}", Created: ${match.created_at}`);
+              
+              // Check if this transcription's filename matches our base filename
+              if (match.file_name === baseFilename) {
+                console.log(`✅ EXACT filename match found: ${match.id}`);
+                matchedTranscriptions.push(match);
+              } else if (match.file_name && baseFilename && 
+                         match.file_name.toLowerCase() === baseFilename.toLowerCase()) {
+                console.log(`✅ Case-insensitive filename match found: ${match.id}`);
+                matchedTranscriptions.push(match);
+              }
             });
             
-            // Use the most recent transcription as our best guess
-            const mostRecent = filenameMatches[0] as TranscriptionRecord;
-            console.log(`Using most recent transcription as fallback: ${mostRecent.id}`);
-            
-            // Update the transcription with the Rev AI job ID for future lookups
-            const { error: updateError } = await supabaseAdmin!
-              .from('transcriptions')
-              .update({
-                rev_ai_job_id: jobId,
-                updated_at: new Date().toISOString()
-              })
-              .eq('id', mostRecent.id);
+            // If we found exact matches, use the most recent one
+            if (matchedTranscriptions.length > 0) {
+              const bestMatch = matchedTranscriptions[0];
+              console.log(`Using best filename match: ${bestMatch.id} with filename "${bestMatch.file_name}"`);
               
-            if (updateError) {
-              console.error('Error updating transcription with Rev AI job ID:', updateError);
+              // Update the transcription with the Rev AI job ID
+              const { error: updateError } = await supabaseAdmin!
+                .from('transcriptions')
+                .update({
+                  rev_ai_job_id: jobId,
+                  updated_at: new Date().toISOString()
+                })
+                .eq('id', bestMatch.id);
+                
+              if (updateError) {
+                console.error('Error updating transcription with Rev AI job ID:', updateError);
+              } else {
+                console.log(`Successfully linked Rev AI job ID ${jobId} to transcription ${bestMatch.id}`);
+                
+                // Continue processing with this transcription
+                transcriptions = [{ id: bestMatch.id, status: bestMatch.status }];
+              }
             } else {
-              console.log(`Successfully linked Rev AI job ID ${jobId} to transcription ${mostRecent.id}`);
+              console.log('⚠️ No exact filename matches found among recent transcriptions');
               
-              // Continue processing with this transcription
-              transcriptions = [{ id: mostRecent.id, status: mostRecent.status }];
+              // If no exact matches, look for partial matches as a fallback
+              const partialMatches: TranscriptionRecord[] = [];
+              
+              (filenameMatches as TranscriptionRecord[]).forEach(match => {
+                if (match.file_name && baseFilename && 
+                    match.file_name.toLowerCase().includes(baseFilename.toLowerCase())) {
+                  console.log(`📋 Partial filename match found: ${match.id} (${match.file_name} contains ${baseFilename})`);
+                  partialMatches.push(match);
+                }
+              });
+              
+              if (partialMatches.length > 0) {
+                const bestPartialMatch = partialMatches[0];
+                console.log(`Using best partial filename match: ${bestPartialMatch.id}`);
+                
+                // Update the transcription with the Rev AI job ID
+                const { error: updateError } = await supabaseAdmin!
+                  .from('transcriptions')
+                  .update({
+                    rev_ai_job_id: jobId,
+                    updated_at: new Date().toISOString()
+                  })
+                  .eq('id', bestPartialMatch.id);
+                  
+                if (updateError) {
+                  console.error('Error updating transcription with Rev AI job ID:', updateError);
+                } else {
+                  console.log(`Successfully linked Rev AI job ID ${jobId} to transcription ${bestPartialMatch.id}`);
+                  
+                  // Continue processing with this transcription
+                  transcriptions = [{ id: bestPartialMatch.id, status: bestPartialMatch.status }];
+                }
+              } else {
+                console.log('⚠️ No filename matches found at all');
+              }
             }
           } else {
             console.log('No matching transcriptions found in fallback search');
