@@ -99,9 +99,11 @@ async function retryWithExponentialBackoff<T>(
 const REV_AI_API_KEY = typeof window === 'undefined' ? process.env.REV_AI_API_KEY || '' : '';
 const REV_AI_BASE_URL = 'https://api.rev.ai/speechtotext/v1';
 
-// Log if Rev.ai API key is missing
+// Log if Rev.ai API key is missing or invalid
 if (!REV_AI_API_KEY) {
   console.error('REV_AI_API_KEY is not set. Transcription will fail.');
+} else if (!REV_AI_API_KEY.match(/^[a-zA-Z0-9_-]{20,}$/)) {
+  console.error('REV_AI_API_KEY appears to be in an invalid format. It should be a string of at least 20 alphanumeric characters, underscores, or hyphens.');
 }
 
 // Maximum file size allowed (400MB)
@@ -171,27 +173,46 @@ async function submitRevAiJob(mediaUrl: string) {
     
     console.log('Request body:', JSON.stringify(requestBody));
     
-    const response = await fetch(`${REV_AI_BASE_URL}/jobs`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${REV_AI_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(requestBody)
-    });
-    
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('Rev.ai job submission failed:', errorText);
-      console.error('Response status:', response.status, response.statusText);
-      console.error('Response headers:', JSON.stringify(Object.fromEntries([...response.headers.entries()])));
-      throw new Error(`Rev.ai API error: ${response.status} ${response.statusText} - ${errorText}`);
+    try {
+      const response = await fetch(`${REV_AI_BASE_URL}/jobs`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${REV_AI_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(requestBody)
+      });
+      
+      // Log the raw response status and headers for debugging
+      console.log('Rev.ai API response status:', response.status, response.statusText);
+      console.log('Rev.ai API response headers:', JSON.stringify(Object.fromEntries([...response.headers.entries()])));
+      
+      // Try to get the response body as text first
+      const responseText = await response.text();
+      console.log('Rev.ai API response body:', responseText);
+      
+      if (!response.ok) {
+        console.error('Rev.ai job submission failed:', responseText);
+        console.error('Response status:', response.status, response.statusText);
+        throw new Error(`Rev.ai API error: ${response.status} ${response.statusText} - ${responseText}`);
+      }
+      
+      // Parse the response text as JSON
+      let data;
+      try {
+        data = JSON.parse(responseText);
+      } catch (parseError) {
+        console.error('Failed to parse Rev.ai response as JSON:', parseError);
+        throw new Error(`Invalid JSON response from Rev.ai: ${responseText}`);
+      }
+      
+      console.log('Rev.ai job submitted successfully:', data.id);
+      console.log('Full Rev.ai response:', JSON.stringify(data));
+      return data;
+    } catch (error) {
+      console.error('Error submitting Rev.ai job:', error);
+      throw error;
     }
-    
-    const data = await response.json();
-    console.log('Rev.ai job submitted successfully:', data.id);
-    console.log('Full Rev.ai response:', JSON.stringify(data));
-    return data;
   } catch (error) {
     console.error('Error submitting Rev.ai job:', error);
     throw error;
