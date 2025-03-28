@@ -265,40 +265,38 @@ export async function POST(req: Request) {
       } as const, { status: 400 });
     }
 
-    // Check if there's a summary to use for the analysis
-    let summaryText = '';
-    if (transcription.summary_text && transcription.summary_status === 'completed') {
-      if (typeof transcription.summary_text === 'string') {
-        summaryText = transcription.summary_text;
-      } else {
-        // Try to convert to string if possible
-        summaryText = String(transcription.summary_text);
-      }
-    }
-    
-    // Check if transcription is complete
+    // Check if transcription is completed and has text
     if (transcription.status !== 'completed') {
-      console.log(`Transcription ${transcriptionId} is not complete (status: ${transcription.status}), cannot analyze`);
-      
-      // Return a more informative error response with a 202 Accepted status instead of 400 Bad Request
-      // This indicates the request was valid but is still being processed
+      console.log(`Transcription ${transcriptionId} is not completed (status: ${transcription.status})`);
       return NextResponse.json({
         success: false,
-        error: 'Transcription is still processing',
-        status: transcription.status,
-        retryAfter: 10, // Suggest client retry after 10 seconds
-        isPartial: true
-      } as const, { status: 202 }); // 202 Accepted is more appropriate than 400 Bad Request
+        error: 'Transcription is still processing. Please try again later.'
+      }, { status: 400 });
+    }
+    
+    const transcriptionText = transcription.transcription_text;
+    
+    // Check if transcription text exists and is not a processing message
+    if (!transcriptionText || 
+        (typeof transcriptionText === 'string' && (
+          transcriptionText.includes('being processed') || 
+          transcriptionText.includes('in progress')
+        ))) {
+      console.log('Transcription is still processing or not available');
+      return NextResponse.json({
+        success: false,
+        error: 'Transcription is still processing. Please try again later.'
+      }, { status: 400 });
     }
     
     // Extract the text to analyze
     let textToAnalyze = '';
     
-    if (typeof transcription.transcription_text === 'string') {
-      textToAnalyze = transcription.transcription_text;
-    } else if (transcription.transcription_text && typeof transcription.transcription_text === 'object') {
+    if (typeof transcriptionText === 'string') {
+      textToAnalyze = transcriptionText;
+    } else if (transcriptionText && typeof transcriptionText === 'object') {
       // Try to convert object to string if possible
-      textToAnalyze = String(transcription.transcription_text);
+      textToAnalyze = String(transcriptionText);
     } else {
       return NextResponse.json({
         success: false,

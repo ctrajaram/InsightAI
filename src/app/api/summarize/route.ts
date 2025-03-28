@@ -275,7 +275,7 @@ export async function POST(request: NextRequest) {
     }
     
     // If the transcription is not completed, return an error
-    if (transcription.status !== 'completed' || !transcription.transcription_text) {
+    if (transcription.status !== 'completed') {
       console.log(`Transcription ${transcriptionId} is not completed (status: ${transcription.status})`);
       return NextResponse.json({ 
         success: false, 
@@ -284,12 +284,24 @@ export async function POST(request: NextRequest) {
       } as ErrorResponse, { status: 400 });
     }
     
-    // Extract the text to summarize
-    const textToSummarize = transcription.transcription_text;
+    const transcriptionText = transcription.transcription_text;
+    
+    // Check if transcription text exists and is not a processing message
+    if (!transcriptionText || 
+        (typeof transcriptionText === 'string' && (
+          transcriptionText.includes('being processed') || 
+          transcriptionText.includes('in progress')
+        ))) {
+      console.log('Transcription is still processing or not available');
+      return NextResponse.json({
+        success: false,
+        error: 'Transcription is still processing. Please try again later.'
+      }, { status: 400 });
+    }
     
     // Validate the text
-    if (typeof textToSummarize !== 'string') {
-      console.error('Invalid transcription text format:', typeof textToSummarize);
+    if (typeof transcriptionText !== 'string') {
+      console.error('Invalid transcription text format:', typeof transcriptionText);
       return NextResponse.json({
         success: false,
         error: 'Invalid transcription text format'
@@ -297,7 +309,7 @@ export async function POST(request: NextRequest) {
     }
     
     // Check if the text is empty
-    if (!textToSummarize.trim()) {
+    if (!transcriptionText.trim()) {
       console.error('Transcription text is empty');
       return NextResponse.json({
         success: false,
@@ -345,7 +357,7 @@ export async function POST(request: NextRequest) {
         Focus on the main topics discussed, key points, and any important conclusions.
         
         Transcription:
-        ${textToSummarize}
+        ${transcriptionText}
       `;
       
       console.log(`Generating summary for transcription ${transcriptionId}`);
@@ -376,38 +388,30 @@ export async function POST(request: NextRequest) {
       
       console.log(`Summary generated for transcription ${transcriptionId} (${summary.length} chars)`);
       
-      // Update the transcription with the summary
-      try {
-        const { error: updateError } = await supabaseAdmin
-          .from('transcriptions')
-          .update({
-            summary_text: summary,
-            summary_status: 'completed',
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', transcriptionId);
-          
-        if (updateError) {
-          console.error('Error updating transcription with summary:', updateError);
-          throw updateError;
-        }
+      // Update the transcription record with the summary
+      const summaryText = summary;
+      const { error: updateError } = await supabaseAdmin
+        .from('transcriptions')
+        .update({
+          summary_text: summaryText,
+          summary_status: 'completed',
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', transcriptionId);
         
-        console.log(`Successfully updated transcription ${transcriptionId} with summary`);
-        
-        // Return the summary
-        return NextResponse.json({ 
-          success: true,
-          summary: summary,
-          summaryStatus: 'completed'
-        } as SuccessResponse);
-      } catch (updateError: any) {
+      if (updateError) {
         console.error('Error updating transcription with summary:', updateError);
-        return NextResponse.json({ 
-          success: false, 
-          error: 'Failed to save summary',
-          details: updateError.message 
-        } as ErrorResponse, { status: 500 });
+        throw updateError;
       }
+        
+      console.log(`Successfully updated transcription ${transcriptionId} with summary`);
+        
+      // Return the summary
+      return NextResponse.json({ 
+        success: true,
+        summary: summaryText,
+        summaryStatus: 'completed'
+      } as SuccessResponse);
     } catch (error: any) {
       console.error('Error generating summary:', error);
       

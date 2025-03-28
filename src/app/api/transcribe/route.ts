@@ -399,7 +399,7 @@ async function processAudioFile(url: string, transcriptionId: string) {
         .from('transcriptions')
         .update({
           status: 'processing',
-          transcription_text: 'Processing your audio file. Please wait...',
+          transcription_text: 'Your audio is being processed. Please wait...',
           updated_at: new Date().toISOString()
         })
         .eq('id', transcriptionId);
@@ -416,7 +416,7 @@ async function processAudioFile(url: string, transcriptionId: string) {
         .from('transcriptions')
         .update({
           status: 'processing',
-          transcription_text: 'Your audio is being processed. This may take several minutes.',
+          transcription_text: 'Your audio is being processed. Please check back later.',
           updated_at: new Date().toISOString()
         })
         .eq('id', transcriptionId);
