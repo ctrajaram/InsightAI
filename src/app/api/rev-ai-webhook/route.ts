@@ -189,85 +189,38 @@ export async function POST(request: NextRequest) {
       }
     }
     
-    // Find the transcription record with this Rev AI job ID using retry logic
-    let transcriptions: { id: string; status: string }[] | null = null;
-    let findError: any; // Type as 'any' to fix TypeScript errors
+    // Try to find the transcription with retries
+    let transcriptions: { id: string; status: string }[] = [];
+    let findError: any = null;
     
     try {
-      console.log(`Job ID type: ${typeof jobId}, value: ${jobId}, length: ${jobId.length}`);
-      
-      // First, check if the job ID exists in any records
-      const { data: allTranscriptions, error: checkError } = await supabaseAdmin!
-        .from('transcriptions')
-        .select('id, rev_ai_job_id')
-        .order('created_at', { ascending: false })
-        .limit(10);
-        
-      if (checkError) {
-        console.error('Error checking recent transcriptions:', checkError);
-      } else if (allTranscriptions && allTranscriptions.length > 0) {
-        console.log('Recent transcriptions:');
-        allTranscriptions.forEach((t: any) => {
-          console.log(`- ID: ${t.id}, Rev AI job ID: "${t.rev_ai_job_id}"`);
-          
-          // Check for case-insensitive match
-          if (t.rev_ai_job_id && jobId && 
-              t.rev_ai_job_id.toLowerCase() === jobId.toLowerCase()) {
-            console.log(`Found case-insensitive match for job ID ${jobId} in transcription ${t.id}`);
-            
-            // Update with the exact job ID from the webhook to ensure future exact matches
-            supabaseAdmin!
-              .from('transcriptions')
-              .update({ rev_ai_job_id: jobId })
-              .eq('id', t.id)
-              .then(({ error }) => {
-                if (error) {
-                  console.error('Error updating job ID case:', error);
-                } else {
-                  console.log(`Updated job ID case for transcription ${t.id}`);
-                }
-              });
-          }
-        });
-      } else {
-        console.log('No recent transcriptions found in database');
-      }
-      
-      const result = await retryOperation(async () => {
-        console.log(`Executing database query to find transcription with Rev AI job ID: "${jobId}"`);
-        console.log(`Raw job ID for query: ${jobId}, type: ${typeof jobId}, length: ${jobId.length}`);
-        
-        // Try a direct query first
+      // Use retry logic for database operations
+      const result = await retryOperation<{ id: string; status: string }[]>(async () => {
+        // Query the database for the transcription with this job ID
         const { data, error } = await supabaseAdmin!
           .from('transcriptions')
           .select('id, status')
           .eq('rev_ai_job_id', jobId);
           
         if (error) {
-          console.error(`Database error when finding transcription with Rev AI job ID "${jobId}":`, error);
+          console.error('Error finding transcription:', error);
           throw error;
         }
         
-        console.log(`Query results for Rev AI job ID "${jobId}":`, data);
-        
-        // If no results, try a case-insensitive query
+        // If no results, try alternative queries
         if (!data || data.length === 0) {
           console.log('No results with exact match, trying case-insensitive query');
           
-          // Try a direct query with case-insensitive comparison
+          // Try fuzzy matching with case-insensitive comparison
           try {
-            // Try a raw SQL query with ILIKE for case-insensitive matching
-            const { data: likeData, error: likeError } = await supabaseAdmin!
+            const { data: fuzzyData, error: fuzzyError } = await supabaseAdmin!
               .from('transcriptions')
               .select('id, status')
-              .ilike('rev_ai_job_id', jobId)
-              .limit(1);
+              .ilike('rev_ai_job_id', `%${jobId}%`);
             
-            if (likeError) {
-              console.error('Error with case-insensitive job ID query:', likeError);
-            } else if (likeData && likeData.length > 0) {
-              console.log('Found results with case-insensitive query:', likeData);
-              return likeData.map(item => ({
+            if (!fuzzyError && fuzzyData && fuzzyData.length > 0) {
+              console.log(`Found ${fuzzyData.length} transcriptions with fuzzy matching of job ID`);
+              return fuzzyData.map(item => ({
                 id: String(item.id),
                 status: String(item.status)
               }));
@@ -277,11 +230,15 @@ export async function POST(request: NextRequest) {
           }
         }
         
-        return data;
+        // Ensure we return properly typed data
+        return (data || []).map(item => ({
+          id: String(item.id),
+          status: String(item.status)
+        }));
       }, 3, 1000);
       
       transcriptions = result;
-    } catch (error: any) { // Type the error as 'any'
+    } catch (error: any) {
       console.error('Database error when finding transcription after retries:', error);
       findError = error;
     }

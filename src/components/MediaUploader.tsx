@@ -2065,22 +2065,22 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       // Auto-generate summary if it's not already summarized or in progress
       if ((!transcriptionRecord.summaryText || transcriptionRecord.isPlaceholderSummary) && 
           transcriptionRecord.summaryStatus !== 'processing') {
+        console.log('Auto-triggering summary for transcription:', transcriptionRecord.id);
         try {
-          console.log('Auto-triggering summary for transcription:', transcriptionRecord.id);
           await generateSummaryForTranscription(transcriptionRecord.id, transcriptionRecord.transcriptionText);
         } catch (error) {
           console.error('Auto-summary generation failed:', error);
         }
       }
       
-      // Auto-analyze sentiment if it's not already analyzed or in progress
+      // Auto-generate analysis if it's not already analyzed or in progress
       if (!transcriptionRecord.analysisData && 
           transcriptionRecord.analysisStatus !== 'processing') {
+        console.log('Auto-triggering analysis for transcription:', transcriptionRecord.id);
         try {
-          console.log('Auto-triggering analysis for transcription:', transcriptionRecord.id);
           await requestAnalysis(transcriptionRecord.id);
         } catch (error) {
-          console.error('Auto-sentiment analysis failed:', error);
+          console.error('Auto-analysis generation failed:', error);
         }
       }
     };
@@ -2356,16 +2356,6 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       }
       
       const data = await response.json();
-      
-      // Check if this is a simulated success response in development mode
-      if (data.warning && data.warning.includes('simulated')) {
-        console.warn('Development mode: Analysis data save was simulated:', data);
-        
-        // Even though it's simulated, we'll treat it as a success for UI purposes
-        console.log('Treating simulated response as success for UI purposes');
-        setErrorMessage(null);
-        return true;
-      }
       
       console.log('Analysis data saved successfully:', data);
       setErrorMessage(null);
@@ -2685,6 +2675,12 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
 
     console.log('Setting up polling for transcription updates:', currentTranscriptionId);
     
+    // Keep track of API call attempts to prevent duplicates
+    const apiCallTracker = {
+      summaryCalled: false,
+      analysisCalled: false
+    };
+    
     // Function to fetch the latest transcription data
     const fetchLatestTranscriptionData = async () => {
       try {
@@ -2702,14 +2698,23 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
         }
         
         if (data) {
+          // Only log when there are meaningful changes
+          const hasSummary = !!data.summary_text;
+          const hasAnalysis = !!data.analysis_data;
+          const isComplete = data.status === 'completed' && 
+                           data.summary_status === 'completed' && 
+                           data.analysis_status === 'completed' &&
+                           hasSummary && 
+                           hasAnalysis;
+          
           console.log('Received updated transcription data:', {
             id: data.id,
             status: data.status,
-            hasSummary: !!data.summary_text,
+            hasSummary,
             summaryStatus: data.summary_status,
-            hasAnalysis: !!data.analysis_data,
+            hasAnalysis,
             analysisStatus: data.analysis_status,
-            updatedAt: data.updated_at
+            isComplete
           });
           
           // Map the database record to our frontend format
@@ -2718,13 +2723,22 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
           // Update the transcription record in state
           setTranscriptionRecord(prev => {
             // Only update if we have new data that's different from what we already have
-            if (!prev || 
-                prev.status !== mappedRecord.status || 
-                prev.summaryStatus !== mappedRecord.summaryStatus || 
-                prev.analysisStatus !== mappedRecord.analysisStatus ||
-                (mappedRecord.summaryText && !prev.summaryText) ||
-                (mappedRecord.analysisData && !prev.analysisData)) {
-              
+            // This prevents unnecessary re-renders
+            if (!prev) return mappedRecord;
+            
+            const hasStatusChange = prev.status !== mappedRecord.status;
+            const hasSummaryStatusChange = prev.summaryStatus !== mappedRecord.summaryStatus;
+            const hasAnalysisStatusChange = prev.analysisStatus !== mappedRecord.analysisStatus;
+            const hasSummaryTextChange = !prev.summaryText && mappedRecord.summaryText;
+            const hasAnalysisDataChange = !prev.analysisData && mappedRecord.analysisData;
+            
+            const hasChanges = hasStatusChange || 
+                             hasSummaryStatusChange || 
+                             hasAnalysisStatusChange || 
+                             hasSummaryTextChange || 
+                             hasAnalysisDataChange;
+            
+            if (hasChanges) {
               console.log('Updating transcription record with new data');
               return mappedRecord;
             }
@@ -2732,12 +2746,33 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
             return prev;
           });
           
+          // Check if we need to trigger summary or analysis
+          // Only trigger if not already called and not already completed
+          if (data.status === 'completed' && !data.summary_text && 
+              data.summary_status !== 'processing' && !apiCallTracker.summaryCalled) {
+            console.log('Triggering summary generation from polling');
+            apiCallTracker.summaryCalled = true;
+            try {
+              await generateSummaryForTranscription(data.id, data.transcription_text || '');
+            } catch (error) {
+              console.error('Error triggering summary from polling:', error);
+            }
+          }
+          
+          if (data.status === 'completed' && data.summary_status === 'completed' && 
+              !data.analysis_data && data.analysis_status !== 'processing' && 
+              !apiCallTracker.analysisCalled) {
+            console.log('Triggering analysis from polling');
+            apiCallTracker.analysisCalled = true;
+            try {
+              await requestAnalysis(data.id);
+            } catch (error) {
+              console.error('Error triggering analysis from polling:', error);
+            }
+          }
+          
           // If everything is complete, stop polling
-          if (data.status === 'completed' && 
-              data.summary_status === 'completed' && 
-              data.analysis_status === 'completed' &&
-              data.summary_text && 
-              data.analysis_data) {
+          if (isComplete) {
             console.log('All processing complete, stopping polling');
             return true; // Signal to stop polling
           }
@@ -2750,7 +2785,7 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       }
     };
     
-    // Set up polling interval
+    // Set up polling interval with a longer delay (15 seconds instead of 5)
     const pollInterval = setInterval(async () => {
       try {
         const shouldStop = await fetchLatestTranscriptionData();
@@ -2761,18 +2796,22 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       } catch (error) {
         console.error('Error during polling interval:', error);
       }
-    }, 5000); // Poll every 5 seconds
+    }, 15000); // Poll every 15 seconds instead of 5
     
-    // Initial fetch immediately
-    fetchLatestTranscriptionData();
+    // Initial fetch after a short delay to allow the UI to stabilize
+    const initialFetchTimeout = setTimeout(() => {
+      fetchLatestTranscriptionData();
+    }, 2000);
     
-    // Clean up interval on unmount
+    // Clean up interval and timeout on unmount
     return () => {
       console.log('Cleaning up transcription polling interval');
       clearInterval(pollInterval);
+      clearTimeout(initialFetchTimeout);
     };
-  }, [currentTranscriptionId, supabase]);
+  }, [currentTranscriptionId, supabase, generateSummaryForTranscription, requestAnalysis]);
 
+  // Modify the auto-processing effect to avoid duplicate API calls
   useEffect(() => {
     const autoProcessTranscription = async () => {
       // Skip if no transcription record or if it doesn't have both ID and text
