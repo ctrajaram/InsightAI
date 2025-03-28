@@ -769,885 +769,221 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
     }, 1000);
   };
 
-  const generateSummaryForTranscription = async (finalTranscriptionId: string, finalTranscriptionText: string) => {
-    console.log(`Processing summary for transcription ID: ${finalTranscriptionId}`);
+  const fetchTranscriptionData = async (transcriptionId: string) => {
+    if (!transcriptionId) return null;
     
-    // Implement debouncing to prevent multiple rapid requests
-    const now = Date.now();
-    const timeSinceLastRequest = now - lastSummaryRequestTime;
+    try {
+      console.log('Directly fetching transcription data for ID:', transcriptionId);
+      
+      const { data, error } = await supabase
+        .from('transcriptions')
+        .select('*')
+        .eq('id', transcriptionId)
+        .single();
+        
+      if (error) {
+        console.error('Error fetching transcription data:', error);
+        return null;
+      }
+      
+      if (!data) {
+        console.log('No transcription found with ID:', transcriptionId);
+        return null;
+      }
+      
+      console.log('Successfully fetched transcription data:', {
+        id: data.id,
+        status: data.status,
+        hasSummary: !!data.summary_text,
+        summaryStatus: data.summary_status,
+        hasAnalysis: !!data.analysis_data,
+        analysisStatus: data.analysis_status
+      });
+      
+      return data;
+    } catch (error) {
+      console.error('Exception fetching transcription data:', error);
+      return null;
+    }
+  };
+  
+  const updateUIWithLatestData = async () => {
+    if (!currentTranscriptionId) return;
     
-    // If a summary request is already in progress, don't start another one
+    try {
+      const data = await fetchTranscriptionData(currentTranscriptionId);
+      if (!data) return;
+      
+      // Map the database record to our frontend format
+      const mappedRecord = mapDbRecordToTranscriptionRecord(data);
+      
+      // Update the UI state with the latest data
+      setTranscriptionRecord(mappedRecord);
+      
+      // Update processing states based on the data
+      setIsTranscribing(data.status === 'processing');
+      setIsSummarizing(data.summary_status === 'processing');
+      setIsAnalyzing(data.analysis_status === 'processing');
+      
+      // Update status messages
+      if (data.status === 'error') {
+        setErrorMessage(`Transcription error: ${data.error || 'Unknown error'}`);
+      } else if (data.summary_status === 'error') {
+        setErrorMessage('Error generating summary. Please try again.');
+      } else if (data.analysis_status === 'error') {
+        setErrorMessage('Error analyzing content. Please try again.');
+      } else {
+        setErrorMessage(null);
+      }
+    } catch (error) {
+      console.error('Error updating UI with latest data:', error);
+    }
+  };
+
+  const generateSummaryForTranscription = async (transcriptionId: string, transcriptionText: string) => {
     if (summaryRequestInProgress) {
       console.log('Summary request already in progress, skipping duplicate request');
       return;
     }
     
-    // If we've made a request in the last 5 seconds, wait before making another one
-    if (timeSinceLastRequest < 5000) {
-      console.log(`Last summary request was ${timeSinceLastRequest}ms ago, debouncing`);
-      setErrorMessage('Please wait a moment before requesting another summary');
-      return;
-    }
-    
-    // Validate inputs before proceeding
-    if (!finalTranscriptionId) {
-      console.error('Missing transcription ID, cannot generate summary');
-      setErrorMessage('Cannot generate summary: Missing transcription ID');
-      return;
-    }
-    
-    if (!finalTranscriptionText || finalTranscriptionText.trim().length < 10) {
-      console.error('Transcription text is too short or empty, cannot generate summary');
-      setErrorMessage('Cannot generate summary: Transcription text is too short or empty');
-      return;
-    }
-    
-    // Update state to track this request
+    console.log('Generating summary for transcription:', transcriptionId);
+    setIsSummarizing(true);
     setSummaryRequestInProgress(true);
-    setLastSummaryRequestTime(now);
-    setSummaryRequestCount(prev => prev + 1);
+    setSummaryStatus('processing');
     
     try {
-      // Update state to show we're generating a summary
-      setIsSummarizing(true);
-      setSummaryStatus('processing');
-      setErrorMessage(null); // Clear any previous error messages
-      
-      // Get the access token
+      // Get the current session to retrieve the access token
       const { data: { session } } = await supabase.auth.getSession();
-      let accessToken = session?.access_token;
       
-      // Try to refresh the session first to ensure we have a valid token
-      try {
-        const { error: refreshError } = await supabase.auth.refreshSession();
-        if (refreshError) {
-          console.warn('Session refresh warning (continuing anyway):', refreshError);
-        } else {
-          console.log('Session refreshed successfully before summary request');
-          // Get the fresh token
-          const { data: { session: refreshedSession } } = await supabase.auth.getSession();
-          
-          if (refreshedSession?.access_token) {
-            accessToken = refreshedSession.access_token;
-          }
-        }
-      } catch (refreshError) {
-        console.warn('Error refreshing session (continuing anyway):', refreshError);
+      if (!session || !session.access_token) {
+        throw new Error('You must be logged in to generate a summary. Please sign in and try again.');
       }
       
-      // Prepare the request payload AFTER refreshing the session
-      const payload = {
-        transcriptionId: finalTranscriptionId,
-        transcriptionText: finalTranscriptionText || '',
-        accessToken: accessToken || ''
-      };
-      
-      // Validate the payload
-      if (!payload.transcriptionId) {
-        throw new Error('Missing transcriptionId in payload');
-      }
-      
-      if (!payload.transcriptionText || typeof payload.transcriptionText !== 'string') {
-        console.warn('Empty or invalid transcriptionText in payload, setting to empty string');
-        payload.transcriptionText = '';
-      }
-      
-      console.log('Sending summary request with payload:', {
-        transcriptionId: payload.transcriptionId,
-        textLength: payload.transcriptionText?.length || 0,
-        hasAccessToken: !!payload.accessToken
+      // Call the API to generate the summary
+      const response = await fetch('/api/summarize', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({
+          transcriptionId,
+          transcriptionText,
+          cacheBuster: Date.now() // Add cache-busting timestamp
+        }),
       });
-      
-      // Ensure the request body is valid JSON
-      let requestBody: string;
-      try {
-        requestBody = JSON.stringify(payload);
-        // Test parse to ensure it's valid JSON
-        JSON.parse(requestBody);
-        console.log('Request body is valid JSON, length:', requestBody.length);
-      } catch (jsonError: any) {
-        console.error('Failed to create valid JSON payload:', jsonError);
-        throw new Error('Failed to create valid JSON payload: ' + (jsonError.message || 'Unknown error'));
-      }
-      
-      // Double-check that we have a valid request body
-      if (!requestBody || requestBody === '{}' || requestBody.length < 10) {
-        throw new Error('Invalid request body: empty or too short');
-      }
-      
-      // Make the API call to generate the summary with retry logic
-      let retryCount = 0;
-      const maxRetries = 3;
-      let response: Response | null = null;
-      
-      while (retryCount <= maxRetries) {
-        try {
-          console.log(`Attempt ${retryCount + 1}/${maxRetries + 1} to send fetch request to /api/summarize`);
-          
-          // Use XMLHttpRequest instead of fetch for more control, but make it asynchronous
-          response = await new Promise<Response>((resolve, reject) => {
-            const xhr = new XMLHttpRequest();
-            
-            // Set up event handlers
-            xhr.onload = function() {
-              console.log(`XHR response status: ${xhr.status}, statusText: ${xhr.statusText}`);
-              console.log('XHR response headers:', xhr.getAllResponseHeaders());
-              
-              // Create a Response object from the XHR response
-              const responseBody = xhr.responseText;
-              console.log('XHR response body (first 100 chars):', responseBody.substring(0, 100));
-              
-              const response = new Response(responseBody, {
-                status: xhr.status,
-                statusText: xhr.statusText,
-                headers: new Headers({
-                  'Content-Type': xhr.getResponseHeader('Content-Type') || 'application/json'
-                })
-              });
-              
-              resolve(response);
-            };
-            
-            xhr.onerror = function() {
-              console.error('XHR network error');
-              reject(new Error('Network error during summary request'));
-            };
-            
-            xhr.ontimeout = function() {
-              console.error('XHR request timed out');
-              reject(new Error('Request timed out'));
-            };
-            
-            // Open and send the request
-            xhr.open('POST', '/api/summarize', true); // Asynchronous request
-            xhr.setRequestHeader('Content-Type', 'application/json');
-            if (accessToken) {
-              xhr.setRequestHeader('Authorization', `Bearer ${accessToken}`);
-            }
-            
-            // Log the exact request body being sent
-            console.log('Sending exact request body:', requestBody);
-            
-            // Send the request
-            xhr.send(requestBody);
-          });
-          
-          // Check if we need to handle authentication errors
-          if (response && response.status === 401) {
-            console.log('Received 401 error, attempting to refresh token');
-            const { error: refreshError } = await supabase.auth.refreshSession();
-            if (!refreshError) {
-              const { data: { session: freshSession } } = await supabase.auth.getSession();
-              
-              if (freshSession && freshSession.access_token) {
-                accessToken = freshSession.access_token;
-                payload.accessToken = accessToken;
-                requestBody = JSON.stringify(payload);
-                console.log('Token refreshed, retrying with new token');
-                retryCount++;
-                continue;
-              }
-            }
-          }
-          
-          // If we got a successful response or a non-auth error, break out of the retry loop
-          if (response && (response.status >= 200 && response.status < 300 || response.status !== 401)) {
-            break;
-          }
-        } catch (fetchError: any) {
-          console.error(`Fetch error in summary request (attempt ${retryCount + 1}):`, fetchError);
-          retryCount++;
-          
-          if (retryCount <= maxRetries) {
-            // Wait before retrying (exponential backoff)
-            const waitTime = Math.min(1000 * Math.pow(2, retryCount), 10000);
-            console.log(`Retrying in ${waitTime}ms...`);
-            await new Promise(resolve => setTimeout(resolve, waitTime));
-          } else {
-            throw new Error(`Network error during summary request after ${maxRetries} retries: ${fetchError.message || 'Unknown error'}`);
-          }
-        }
-      }
-      
-      if (!response) {
-        throw new Error('Failed to get response from summary API after multiple attempts');
-      }
       
       // Clone the response for potential error handling
       const responseClone = response.clone();
       
       if (!response.ok) {
-        console.error(`Error response from summary API: ${response.status} ${response.statusText}`);
+        let errorMessage = 'Failed to generate summary';
         
         try {
           const errorData = await response.json();
-          console.error('Error data:', errorData);
-          
-          // Check for rate limit errors
-          if (response.status === 429 || (errorData.error && errorData.error.includes('rate limit'))) {
-            console.log('Rate limit reached, will retry in 10 seconds');
-            setErrorMessage('OpenAI rate limit reached. Retrying in 10 seconds...');
-            
-            // Keep the summarizing state but update UI to show waiting
-            setSummaryStatus('waiting');
-            
-            // Set a timeout to retry after 10 seconds
-            setTimeout(() => {
-              console.log('Retrying summary generation after rate limit cooldown');
-              setSummaryRequestInProgress(false);
-              generateSummaryForTranscription(finalTranscriptionId, finalTranscriptionText);
-            }, 10000);
-            
-            return;
-          }
-          
-          // Check if we already have a summary (this is not an error)
-          if (errorData.message && errorData.message.includes('Summary already exists')) {
-            console.log('Summary already exists, using existing summary');
-            setErrorMessage(null);
-            setIsSummarizing(false);
-            setSummaryStatus('completed');
-            setSummaryRequestInProgress(false);
-            
-            // Fetch the latest record to get the summary
-            const { data: latestRecord, error: fetchError } = await supabase
-              .from('transcriptions')
-              .select('id, user_id, transcription_text, summary_status, summary_text, analysis_status, analysis_data, status, created_at, media_path, media_url')
-              .eq('id', finalTranscriptionId)
-              .single();
-              
-            if (!fetchError && latestRecord) {
-              // Update the record with the existing summary
-              setTranscriptionRecord(mapDbRecordToTranscriptionRecord(latestRecord));
-            }
-            
-            return;
-          }
-          
-          // Check if this is an authentication error
-          const isAuthError = response.status === 401 || 
-                           errorData.error?.toLowerCase().includes('auth') || 
-                           errorData.error?.toLowerCase().includes('token') || 
-                           errorData.error?.toLowerCase().includes('permission');
-          
-          if (isAuthError) {
-            setErrorMessage('Authentication error: Please refresh the page and try again');
-          } else {
-            setErrorMessage(errorData.error || 'Failed to generate summary');
-          }
-        } catch (parseError: any) {
+          errorMessage = errorData.error || errorMessage;
+        } catch (jsonError: any) {
           try {
-            // If JSON parsing fails, try to get the response as text
             const errorText = await responseClone.text();
             console.error('Raw error response:', errorText);
-            
-            // Check for rate limit errors in the text
-            if (errorText.includes('rate limit') || errorText.includes('429')) {
-              console.log('Rate limit reached, will retry in 10 seconds');
-              setErrorMessage('OpenAI rate limit reached. Retrying in 10 seconds...');
-              
-              // Keep the summarizing state but update UI to show waiting
-              setSummaryStatus('waiting');
-              
-              // Set a timeout to retry after 10 seconds
-              setTimeout(() => {
-                console.log('Retrying summary generation after rate limit cooldown');
-                setSummaryRequestInProgress(false);
-                generateSummaryForTranscription(finalTranscriptionId, finalTranscriptionText);
-              }, 10000);
-              
-              return;
-            }
-            
-            setErrorMessage(errorText || 'Failed to generate summary');
+            errorMessage = errorText || errorMessage;
           } catch (textError) {
             // If all else fails, use the status text
-            setErrorMessage(`Error ${response.status}: ${response.statusText || 'Unknown error'}`);
+            errorMessage = `Error ${response.status}: ${response.statusText || 'Unknown error'}`;
           }
         }
         
-        // Set error state and stop processing
-        setIsSummarizing(false);
-        setSummaryStatus('error');
-        setSummaryRequestInProgress(false);
-        return;
+        throw new Error(errorMessage);
       }
       
-      // Parse the successful response
-      let data;
-      try {
-        data = await response.json();
-        console.log('Summary response parsed successfully:', data);
-      } catch (jsonError: any) {
-        console.error('Failed to parse summary response as JSON:', jsonError);
-        try {
-          const responseText = await responseClone.text();
-          console.error('Raw response:', responseText.substring(0, 200)); // Log first 200 chars
-          throw new Error('Invalid response from server. Please try again.');
-        } catch (textError) {
-          console.error('Could not read response body');
-          throw new Error('Invalid response from server. Please try again.');
-        }
-      }
-      
+      const data = await response.json();
       console.log('Summary generated successfully:', data);
       
-      // Check if this is a placeholder summary
-      const isPlaceholder = data.isPlaceholder === true;
-      if (isPlaceholder) {
-        console.log('Received placeholder summary. Will enable summary tab but show placeholder message.');
-      }
+      // Update the UI with the latest data
+      await updateUIWithLatestData();
       
-      // Check if the summary was saved to the database
-      if (data.dbUpdateSuccess === false) {
-        console.warn('Summary was generated but not saved to the database. Attempting to save it manually...');
-        
-        // Try to manually update the database with the summary
-        try {
-          const { error: manualUpdateError } = await supabase
-            .from('transcriptions')
-            .update({
-              summary_text: data.summary.text,
-              summary_status: 'completed',
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', finalTranscriptionId);
-            
-          if (manualUpdateError) {
-            console.error('Manual update of summary failed:', manualUpdateError);
-          } else {
-            console.log('Manual update of summary succeeded');
-          }
-        } catch (manualError) {
-          console.error('Error during manual summary update:', manualError);
-        }
-      }
-      
-      // Verify that the database was updated correctly
-      const { data: updatedRecord, error: fetchError } = await supabase
-        .from('transcriptions')
-        .select('id, analysis_data, analysis_status, transcription_text, status, created_at, media_path, media_url, user_id, summary_text, summary_status')
-        .eq('id', finalTranscriptionId)
-        .single();
-      
-      if (fetchError) {
-        console.error('Error verifying summary update:', fetchError);
-        setErrorMessage('Error verifying summary update');
-      } else {
-        console.log('Verified summary update. Summary status:', updatedRecord.summary_status);
-        console.log('Summary text present:', !!updatedRecord.summary_text);
-        console.log('Summary text:', updatedRecord.summary_text?.substring(0, 100));
-        
-        // If the summary text is missing in the database but we have it in the response, use it directly
-        const summaryTextToUse = updatedRecord.summary_text || (data.summary && data.summary.text) || '';
-        
-        if (!updatedRecord.summary_text && data.summary && data.summary.text) {
-          console.log('Summary text missing in database but available in response. Using response data.');
-          
-          // Try to update the database one more time
-          try {
-            const { error: finalUpdateError } = await supabase
-              .from('transcriptions')
-              .update({
-                summary_text: data.summary.text,
-                summary_status: 'completed',
-                updated_at: new Date().toISOString()
-              })
-              .eq('id', finalTranscriptionId);
-              
-            if (finalUpdateError) {
-              console.error('Final attempt to update summary failed:', finalUpdateError);
-            } else {
-              console.log('Final summary update succeeded');
-            }
-          } catch (finalError) {
-            console.error('Error during final summary update:', finalError);
-          }
-        }
-        
-        // Map the database record to our frontend format
-        const mappedRecord = mapDbRecordToTranscriptionRecord(updatedRecord);
-        console.log('Mapped record summary text present:', !!mappedRecord.summaryText);
-        console.log('Mapped record summary text:', mappedRecord.summaryText?.substring(0, 100));
-        
-        // Update the transcription record in state, ensuring the summary text is set
-        setTranscriptionRecord(prev => {
-          if (!prev) return null;
-          
-          // If we have a placeholder summary, make sure it's marked as such
-          const finalSummaryText = mappedRecord.summaryText || summaryTextToUse;
-          const finalSummaryStatus = isPlaceholder ? 'completed' : (mappedRecord.summaryStatus || 'completed');
-          
-          // Ensure summary text is properly set
-          return {
-            ...mappedRecord,
-            summaryText: finalSummaryText,
-            summaryStatus: finalSummaryStatus,
-            isPlaceholderSummary: isPlaceholder || false
-          };
-        });
-      }
-      
-      // Update state to show we've completed generating a summary
-      setIsSummarizing(false);
       setSummaryStatus('completed');
-      setErrorMessage(null);
-      
-      // After summary is complete, automatically trigger analysis
-      if (data.success && finalTranscriptionId) {
-        console.log('Summary complete, automatically starting analysis');
-        setTimeout(() => {
-          requestAnalysis(finalTranscriptionId);
-        }, 1000);
-      }
-      
+      return data;
     } catch (error: any) {
       console.error('Error generating summary:', error);
-      setIsSummarizing(false);
+      setErrorMessage(`Failed to generate summary: ${error.message || 'Unknown error'}`);
       setSummaryStatus('error');
-      setErrorMessage('Failed to generate summary: ' + (error.message || 'Unknown error'));
+      return null;
     } finally {
-      // Always reset the request in progress flag when done
+      setIsSummarizing(false);
       setSummaryRequestInProgress(false);
     }
   };
 
-  const retryOperation = async <T,>(
-    operation: () => Promise<T>,
-    maxRetries = 3,
-    initialDelay = 1000,
-    label = 'Operation'
-  ): Promise<T> => {
-    let lastError;
-    let delay = initialDelay;
-    
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        return await operation();
-      } catch (error: any) {
-        lastError = error;
-        console.log(`${label} attempt ${attempt} failed, retrying in ${delay}ms...`, error.message);
-        await new Promise(resolve => setTimeout(resolve, delay));
-        delay *= 1.5; // Exponential backoff
-      }
-    }
-    
-    console.error(`${label} failed after ${maxRetries} attempts`);
-    throw lastError;
-  };
-
   const requestAnalysis = async (transcriptionId: string) => {
-    console.log(`Requesting analysis for transcription ID: ${transcriptionId}`);
-    
-    // Prevent duplicate or rapid requests
     if (analysisStatus === 'processing' || analysisStatus === 'pending') {
       console.log('Analysis request already in progress, skipping duplicate request');
       return;
     }
     
-    // Validate transcription ID
-    if (!transcriptionId) {
-      console.error('Invalid transcription ID for analysis');
-      setErrorMessage('Cannot analyze: Missing transcription ID');
-      return;
-    }
+    console.log('Requesting analysis for transcription:', transcriptionId);
+    setIsAnalyzing(true);
+    setAnalysisStatus('processing');
     
     try {
-      // Update state to show we're generating an analysis - do this FIRST to prevent flickering
-      setIsAnalyzing(true);
-      setAnalysisStatus('processing');
-      setErrorMessage(null); // Clear any previous error messages
+      // Get the current session to retrieve the access token
+      const { data: { session } } = await supabase.auth.getSession();
       
-      // Add a small delay to let the UI stabilize before making API calls
-      await new Promise(resolve => setTimeout(resolve, 300));
-      
-      // First, check if the transcription is complete
-      const { data: transcription, error: transcriptionError } = await supabase
-        .from('transcriptions')
-        .select('id, status, transcription_text')
-        .eq('id', transcriptionId)
-        .single();
-        
-      if (transcriptionError) {
-        console.error('Error fetching transcription status:', transcriptionError);
-        throw new Error('Failed to verify transcription status');
+      if (!session || !session.access_token) {
+        throw new Error('You must be logged in to analyze a transcription. Please sign in and try again.');
       }
       
-      if (!transcription) {
-        console.error('Transcription not found');
-        throw new Error('Transcription not found');
-      }
-      
-      // Check if transcription is complete
-      if (transcription.status !== 'completed') {
-        console.log('Transcription is not complete yet, cannot analyze');
-        setAnalysisStatus('pending');
-        setErrorMessage('Waiting for transcription to complete before analysis');
-        
-        // Return early, analysis will be triggered after transcription completes
-        return;
-      }
-      
-      // Get the access token
-      let accessToken = '';
-      try {
-        const { data: { session } } = await supabase.auth.getSession();
-        accessToken = session?.access_token || '';
-      } catch (error) {
-        console.error('Failed to get access token:', error);
-      }
-      
-      // Prepare request payload
-      const payload = {
-        transcriptionId,
-        accessToken,
-        cacheBuster: Date.now() // Add cache-busting timestamp
-      };
-      
-      // Validate payload before sending
-      if (!payload.transcriptionId) {
-        throw new Error('Missing transcription ID in payload');
-      }
-      
-      const payloadString = JSON.stringify(payload);
-      console.log('Sending analysis request with payload:', payloadString.substring(0, 100) + (payloadString.length > 100 ? '...' : ''));
-      
-      // Make the API call to generate the analysis
+      // Call the API to analyze the transcription
       const response = await fetch('/api/analyze', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${accessToken}`
+          'Authorization': `Bearer ${session.access_token}`
         },
-        body: payloadString
+        body: JSON.stringify({
+          transcriptionId,
+          cacheBuster: Date.now() // Add cache-busting timestamp
+        }),
       });
       
       // Clone the response for potential error handling
       const responseClone = response.clone();
       
       if (!response.ok) {
-        console.error(`Error response from analysis API: ${response.status} ${response.statusText}`);
-        
-        // Special handling for 202 Accepted status (transcription still processing)
-        if (response.status === 202) {
-          try {
-            const errorData = await response.json();
-            console.log('Transcription still processing:', errorData);
-            
-            // Set analysis status to pending
-            setAnalysisStatus('pending');
-            setErrorMessage('Waiting for transcription to complete before analysis');
-            
-            // If we have a retry suggestion, schedule a retry
-            if (errorData.retryAfter && typeof errorData.retryAfter === 'number') {
-              const retrySeconds = Math.max(5, Math.min(30, errorData.retryAfter)); // Between 5-30 seconds
-              console.log(`Will retry analysis in ${retrySeconds} seconds`);
-              
-              // Schedule retry
-              setTimeout(() => {
-                console.log('Retrying analysis after waiting period');
-                requestAnalysis(transcriptionId);
-              }, retrySeconds * 1000);
-            }
-            
-            // Update the UI to show that analysis is pending
-            setTranscriptionRecord(prev => {
-              if (!prev) return null;
-              // Make sure to use a valid analysisStatus value
-              return {
-                ...prev,
-                analysisStatus: 'pending'
-              };
-            });
-            
-            return; // Exit early, we're handling this case specially
-          } catch (parseError) {
-            console.error('Failed to parse 202 response:', parseError);
-          }
-        }
-        
-        // Check if we need to handle authentication errors
-        if (response.status === 401) {
-          console.log('Received 401 error, attempting to refresh token');
-          const { error: refreshError } = await supabase.auth.refreshSession();
-          if (!refreshError) {
-            const { data: { session: freshSession } } = await supabase.auth.getSession();
-            
-            if (freshSession && freshSession.access_token) {
-              const newAccessToken = freshSession.access_token;
-              
-              // Prepare retry payload
-              const retryPayload = {
-                transcriptionId,
-                accessToken: newAccessToken,
-                cacheBuster: Date.now() // Add cache-busting timestamp
-              };
-              
-              // Log the retry payload
-              const retryPayloadString = JSON.stringify(retryPayload);
-              console.log('Retrying with new token. Payload:', retryPayloadString.substring(0, 100) + (retryPayloadString.length > 100 ? '...' : ''));
-              
-              // Retry the request with the new token
-              const retryResponse = await fetch('/api/analyze', {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Authorization': `Bearer ${newAccessToken}`
-                },
-                body: retryPayloadString
-              });
-              
-              if (retryResponse.ok) {
-                // If retry succeeded, process the response
-                const retryData = await retryResponse.json();
-                console.log('Retry successful:', retryData);
-                
-                // Update the UI with the analysis results
-                if (retryData.success) {
-                  setIsAnalyzing(false);
-                  setAnalysisStatus('completed');
-                  setErrorMessage(null);
-                  
-                  // Update the transcription record with the analysis data
-                  setTranscriptionRecord(prev => {
-                    if (!prev) return null;
-                    return {
-                      ...prev,
-                      analysisData: retryData.analysisData || prev.analysisData,
-                      analysisStatus: 'completed'
-                    };
-                  });
-                }
-                
-                return;
-              } else {
-                // If retry failed, continue with original error handling
-                console.error('Retry after session refresh failed');
-              }
-            }
-          }
-        }
+        let errorMessage = 'Failed to analyze transcription';
         
         try {
           const errorData = await response.json();
-          console.error('Error data:', errorData);
-          
-          // Check for rate limit errors
-          if (response.status === 429 || (errorData.error && errorData.error.includes('rate limit'))) {
-            console.log('Rate limit reached, will retry in 10 seconds');
-            setErrorMessage('OpenAI rate limit reached. Retrying in 10 seconds...');
-            
-            // Keep the analyzing state but update UI to show pending
-            setAnalysisStatus('pending');
-            
-            // Set a timeout to retry after 10 seconds
-            setTimeout(() => {
-              console.log('Retrying analysis generation after rate limit cooldown');
-              requestAnalysis(transcriptionId);
-            }, 10000);
-            
-            return;
-          }
-          
-          setErrorMessage(errorData.error || 'Failed to generate analysis');
-        } catch (parseError: any) {
+          errorMessage = errorData.error || errorMessage;
+        } catch (jsonError: any) {
           try {
-            // If JSON parsing fails, try to get the response as text
             const errorText = await responseClone.text();
-            console.error('Error response text:', errorText);
-            
-            // Check for rate limit errors in the text
-            if (errorText.includes('rate limit') || errorText.includes('429')) {
-              console.log('Rate limit reached, will retry in 10 seconds');
-              setErrorMessage('OpenAI rate limit reached. Retrying in 10 seconds...');
-              
-              // Keep the analyzing state but update UI to show pending
-              setAnalysisStatus('pending');
-              
-              // Set a timeout to retry after 10 seconds
-              setTimeout(() => {
-                console.log('Retrying analysis generation after rate limit cooldown');
-                requestAnalysis(transcriptionId);
-              }, 10000);
-              
-              return;
-            }
-            
-            setErrorMessage(errorText || 'Failed to generate analysis');
+            console.error('Raw error response:', errorText);
+            errorMessage = errorText || errorMessage;
           } catch (textError) {
             // If all else fails, use the status text
-            setErrorMessage(`Error ${response.status}: ${response.statusText || 'Unknown error'}`);
+            errorMessage = `Error ${response.status}: ${response.statusText || 'Unknown error'}`;
           }
         }
         
-        setIsAnalyzing(false);
-        setAnalysisStatus('error');
-        return;
+        throw new Error(errorMessage);
       }
       
       const data = await response.json();
+      console.log('Analysis completed successfully:', data);
       
-      console.log('Analysis generated successfully:', data);
+      // Update the UI with the latest data
+      await updateUIWithLatestData();
       
-      // Verify that the database was updated correctly
-      const { data: updatedRecord, error: fetchError } = await supabase
-        .from('transcriptions')
-        .select('id, analysis_data, analysis_status, transcription_text, status, created_at, media_path, media_url, user_id, summary_text, summary_status')
-        .eq('id', transcriptionId)
-        .single();
-      
-      if (fetchError) {
-        console.error('Error verifying analysis update:', fetchError);
-        setErrorMessage('Error verifying analysis update');
-      } else {
-        console.log('Verified analysis update. Analysis status:', updatedRecord.analysis_status);
-        console.log('Analysis data present:', !!updatedRecord.analysis_data);
-        
-        // Map the database record to a TranscriptionRecord using the utility function
-        const mappedRecord = mapDbRecordToTranscriptionRecord(updatedRecord);
-        
-        // Update the transcription record in state
-        setTranscriptionRecord(prev => {
-          if (!prev) return prev;
-          
-          // Create a properly typed analysisData object
-          const safeAnalysisData = mappedRecord.analysisData || prev.analysisData || {
-            sentiment: 'neutral',
-            sentiment_explanation: '',
-            pain_points: [],
-            feature_requests: []
-          };
-          
-          // Ensure analysis data is properly set
-          return {
-            ...mappedRecord,
-            analysisData: safeAnalysisData
-          };
-        });
-        
-        // Set the analysis data for display
-        setAnalysisData(updatedRecord.analysis_data);
-      }
-      
-      // Update state to show we've completed generating an analysis
-      setIsAnalyzing(false);
       setAnalysisStatus('completed');
-      setErrorMessage(null);
-      
+      return data;
     } catch (error: any) {
-      console.error('Error generating analysis:', error);
-      setIsAnalyzing(false);
+      console.error('Error analyzing transcription:', error);
+      setErrorMessage(`Failed to analyze transcription: ${error.message || 'Unknown error'}`);
       setAnalysisStatus('error');
-      setErrorMessage('Failed to generate analysis: ' + (error.message || 'Unknown error'));
-    }
-  };
-
-  const triggerAnalysis = async () => {
-    if (!transcriptionRecord) {
-      console.error('No transcription record available for analysis');
-      setErrorMessage('No transcription record available for analysis');
-      return;
-    }
-    
-    try {
-      // Check if transcription is complete before proceeding
-      if (transcriptionRecord.status !== 'completed') {
-        console.log('Transcription is not complete yet, cannot analyze');
-        setErrorMessage('Please wait for transcription to complete before analyzing');
-        
-        // Set a visual indicator that we're waiting for transcription
-        setAnalysisStatus('pending');
-        
-        // Poll for transcription completion
-        const pollInterval = setInterval(async () => {
-          try {
-            const { data: latestRecord, error: pollError } = await supabase
-              .from('transcriptions')
-              .select('*')
-              .eq('id', transcriptionRecord.id)
-              .single();
-              
-            if (pollError) {
-              console.error('Error fetching transcription status:', pollError);
-              return;
-            }
-            
-            if (latestRecord && latestRecord.status === 'completed') {
-              console.log('Transcription now complete, proceeding with analysis');
-              clearInterval(pollInterval);
-              
-              // Update the transcription record
-              if (latestRecord) {
-                const updatedRecord = mapDbRecordToTranscriptionRecord(latestRecord);
-                if (updatedRecord) {
-                  setTranscriptionRecord(updatedRecord);
-                  
-                  // Now that transcription is complete, proceed with analysis
-                  setIsAnalyzing(true);
-                  setAnalysisStatus('processing');
-                  requestAnalysis(transcriptionRecord.id);
-                }
-              }
-            } else {
-              console.log('Transcription still in progress, waiting...');
-            }
-          } catch (error) {
-            console.error('Error polling for transcription status:', error);
-          }
-        }, 5000); // Poll every 5 seconds
-        
-        // Stop polling after 5 minutes (60 polls)
-        setTimeout(() => {
-          clearInterval(pollInterval);
-          console.log('Stopped polling for transcription completion after timeout');
-          setAnalysisStatus('error');
-          setErrorMessage('Transcription is taking too long. Please try again later.');
-        }, 300000);
-        
-        return;
-      }
-      
-      // If we reach here, transcription is complete, proceed with analysis
-      setIsAnalyzing(true);
-      setAnalysisStatus('processing');
-      
-      // Get the access token
-      let accessToken = '';
-      try {
-        const { data: { session } } = await supabase.auth.getSession();
-        accessToken = session?.access_token || '';
-      } catch (error) {
-        console.error('Failed to get access token:', error);
-      }
-      
-      // Prepare request payload
-      const payload = {
-        transcriptionId: transcriptionRecord.id,
-        accessToken,
-        cacheBuster: Date.now() // Add cache-busting timestamp
-      };
-      
-      // Validate payload before sending
-      if (!payload.transcriptionId) {
-        throw new Error('Missing transcription ID in payload');
-      }
-      
-      const payloadString = JSON.stringify(payload);
-      console.log('Sending analysis request with payload:', payloadString.substring(0, 100) + (payloadString.length > 100 ? '...' : ''));
-      
-      // Request the analysis
-      requestAnalysis(transcriptionRecord.id)
-        .then(() => {
-          console.log('Analysis completed successfully');
-        })
-        .catch((error) => {
-          console.error('Analysis failed:', error);
-          setErrorMessage('Failed to analyze: ' + (error.message || 'Unknown error'));
-        });
-    } catch (error: any) {
-      console.error('Error triggering analysis:', error);
+      return null;
+    } finally {
       setIsAnalyzing(false);
-      setAnalysisStatus('error');
     }
   };
 
@@ -1835,17 +1171,17 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
                 </div>
               ) : isAnalyzing || (transcriptionRecord.analysisStatus === 'processing') ? (
                 <div className="p-6 text-center">
-                  <div className="flex flex-col items-center justify-center">
-                    <div className="relative w-16 h-16 mb-4">
+                  <div className="flex flex-col items-center justify-center space-y-3 py-6">
+                    <div className="relative">
+                      <div className="h-16 w-16 rounded-full border-t-4 border-b-4 border-indigo-500 animate-spin"></div>
                       <div className="absolute inset-0 flex items-center justify-center">
-                        <svg className="animate-spin h-10 w-10 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 0116 0 8 8 0 0116 0 8 8 0 01-16 0 8 8 0 00-16 0zM9 9a1 1 0 000 2h1a1 1 0 100-2H9z" clipRule="evenodd" />
-                        </svg>
+                        <FileText className="h-6 w-6 text-indigo-600" />
                       </div>
                     </div>
-                    <h3 className="text-lg font-medium text-gray-900">Analyzing your transcript</h3>
-                    <p className="text-sm text-gray-500 mt-2">This may take a minute or two...</p>
+                    <div className="text-center">
+                      <p className="font-medium text-gray-800">Analyzing your transcript...</p>
+                      <p className="text-sm text-gray-500 mt-1">This may take a minute or two...</p>
+                    </div>
                   </div>
                 </div>
               ) : !transcriptionRecord.analysisData ? (
@@ -2057,80 +1393,89 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
   }, [transcriptionRecord]);
 
   useEffect(() => {
-    const autoProcessTranscription = async () => {
-      // Skip if no transcription record or if it doesn't have both ID and text
-      if (!transcriptionRecord || !transcriptionRecord.id || !transcriptionRecord.transcriptionText) {
-        return;
-      }
-      
-      console.log('Transcription available, checking if summary and analysis need to be generated');
-      
-      // Check authentication first
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) {
-        console.log('Authentication required for auto-processing - user is not logged in');
-        return; // Exit early without error if not authenticated
-      }
-      
-      // Verify that the transcription is fully complete, not just a placeholder
-      const transcriptionText = transcriptionRecord.transcriptionText || '';
-      const isPlaceholderOrProcessing = 
-        transcriptionText.length < 100 || 
-        transcriptionText.includes('processing your audio') ||
-        transcriptionText.includes('transcription in progress');
-        
-      if (isPlaceholderOrProcessing) {
-        console.log('Transcription appears to be incomplete or a placeholder, delaying auto-processing');
-        return;
-      }
-      
-      // Auto-generate summary if it's not already summarized or in progress
-      if ((!transcriptionRecord.summaryText || transcriptionRecord.isPlaceholderSummary) && 
-          transcriptionRecord.summaryStatus !== 'processing' && 
-          transcriptionRecord.status === 'completed') {
-        console.log('Auto-triggering summary for transcription:', transcriptionRecord.id);
-        try {
-          await generateSummaryForTranscription(transcriptionRecord.id, transcriptionRecord.transcriptionText);
-        } catch (error) {
-          console.error('Auto-summary generation failed:', error);
-        }
-      }
-      
-      // Auto-generate analysis if it's not already analyzed or in progress
-      // Only if summary is complete and transcription is fully complete
-      if (!transcriptionRecord.analysisData && 
-          transcriptionRecord.analysisStatus !== 'processing' &&
-          transcriptionRecord.summaryStatus === 'completed' &&
-          transcriptionRecord.summaryText &&
-          transcriptionRecord.status === 'completed') {
-        console.log('Auto-triggering analysis for transcription:', transcriptionRecord.id);
-        try {
-          await requestAnalysis(transcriptionRecord.id);
-        } catch (error) {
-          console.error('Auto-analysis generation failed:', error);
-        }
-      }
-    };
-    
-    // Only run if transcription record has changed and has valid data
-    if (transcriptionRecord && transcriptionRecord.id && transcriptionRecord.transcriptionText) {
-      autoProcessTranscription();
+    if (currentTranscriptionId) {
+      updateUIWithLatestData();
     }
+  }, [currentTranscriptionId]);
+
+  useEffect(() => {
+    if (!currentTranscriptionId) return;
     
-    // Explicitly list all external functions in the dependency array
-    // but exclude the transcriptionRecord.transcriptionText to prevent infinite loops
-  }, [
-    transcriptionRecord?.id, 
-    transcriptionRecord?.status,
-    transcriptionRecord?.summaryStatus,
-    transcriptionRecord?.analysisStatus,
-    generateSummaryForTranscription, 
-    requestAnalysis, 
-    supabase
-  ]);
+    console.log('Setting up data refresh for transcription:', currentTranscriptionId);
+    
+    // Initial fetch
+    updateUIWithLatestData();
+    
+    // Set up interval for periodic updates (every 30 seconds)
+    const refreshInterval = setInterval(() => {
+      updateUIWithLatestData();
+    }, 30000);
+    
+    // Clean up on unmount
+    return () => {
+      clearInterval(refreshInterval);
+    };
+  }, [currentTranscriptionId]);
 
   return (
     <div className="container mx-auto px-4 py-6 max-w-4xl">
+      <style jsx>{`
+        .status-banner {
+          margin-bottom: 1.5rem;
+          padding: 1rem;
+          border-radius: 0.5rem;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        }
+        
+        .status-banner.info {
+          background-color: #EFF6FF;
+          border: 1px solid #BFDBFE;
+          color: #1E40AF;
+        }
+        
+        .status-banner.error {
+          background-color: #FEF2F2;
+          border: 1px solid #FECACA;
+          color: #B91C1C;
+        }
+        
+        .status-message {
+          font-weight: 500;
+          display: flex;
+          align-items: center;
+        }
+        
+        .loading-dots {
+          display: inline-flex;
+          margin-left: 0.25rem;
+        }
+        
+        .dot {
+          animation: pulse 1.5s infinite;
+          margin-left: 0.125rem;
+        }
+        
+        .dot:nth-child(2) {
+          animation-delay: 0.3s;
+        }
+        
+        .dot:nth-child(3) {
+          animation-delay: 0.6s;
+        }
+        
+        @keyframes pulse {
+          0%, 100% {
+            opacity: 0.3;
+          }
+          50% {
+            opacity: 1;
+          }
+        }
+      `}</style>
+      
       <h1 className="text-3xl font-bold mb-6 bg-gradient-to-r from-indigo-500 to-purple-600 bg-clip-text text-transparent">InsightAI - Customer Interview Analysis</h1>
       
       {showAuthPrompt ? (
