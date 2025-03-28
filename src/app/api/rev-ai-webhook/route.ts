@@ -190,7 +190,7 @@ export async function POST(request: NextRequest) {
     }
     
     // Find the transcription record with this Rev AI job ID using retry logic
-    let transcriptions;
+    let transcriptions: { id: string; status: string }[] | null = null;
     let findError: any; // Type as 'any' to fix TypeScript errors
     
     try {
@@ -337,10 +337,13 @@ export async function POST(request: NextRequest) {
     }
     
     const transcriptionId = transcriptions[0].id;
+    const currentStatus = transcriptions[0].status;
+    
     console.log(`Found transcription ${transcriptionId} for Rev AI job ${jobId}`);
+    console.log(`Current transcription status in database: ${currentStatus}`);
     
     // Log the current status of the transcription in our database
-    console.log(`Current transcription status in database: ${transcriptions[0].status}`);
+    console.log(`Current transcription status in database: ${currentStatus}`);
     
     // If the job is complete, get the transcript and update the database
     if (status === 'transcribed') {
