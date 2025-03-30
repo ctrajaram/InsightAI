@@ -876,6 +876,20 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       // Clone the response for potential error handling
       const responseClone = response.clone();
       
+      // Special handling for 202 status (Accepted but still processing)
+      if (response.status === 202) {
+        console.log('Transcription still processing, summary will be attempted later');
+        
+        // Set up a retry mechanism after a delay
+        setTimeout(() => {
+          console.log('Retrying summary generation after delay...');
+          setSummaryRequestInProgress(false); // Reset this flag so the next attempt can proceed
+          generateSummaryForTranscription(transcriptionId, transcriptionText);
+        }, 10000); // Retry after 10 seconds
+        
+        return null;
+      }
+      
       if (!response.ok) {
         let errorMessage = 'Failed to generate summary';
         
@@ -948,6 +962,19 @@ export function MediaUploader({ onComplete }: { onComplete?: (transcription: Tra
       
       // Clone the response for potential error handling
       const responseClone = response.clone();
+      
+      // Special handling for 202 status (Accepted but still processing)
+      if (response.status === 202) {
+        console.log('Transcription still processing, analysis will be attempted later');
+        
+        // Set up a retry mechanism after a delay
+        setTimeout(() => {
+          console.log('Retrying analysis after delay...');
+          requestAnalysis(transcriptionId);
+        }, 10000); // Retry after 10 seconds
+        
+        return null;
+      }
       
       if (!response.ok) {
         let errorMessage = 'Failed to analyze transcription';

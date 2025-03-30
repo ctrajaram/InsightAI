@@ -281,7 +281,7 @@ export async function POST(request: NextRequest) {
         success: false, 
         error: 'Transcription is not completed',
         details: `Current status: ${transcription.status}`
-      } as ErrorResponse, { status: 400 });
+      } as ErrorResponse, { status: 202 }); 
     }
     
     const transcriptionText = transcription.transcription_text;
@@ -296,7 +296,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         success: false,
         error: 'Transcription is still processing. Please try again later.'
-      }, { status: 400 });
+      }, { status: 202 }); 
     }
     
     // Validate the text

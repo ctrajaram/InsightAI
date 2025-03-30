@@ -271,7 +271,7 @@ export async function POST(req: Request) {
       return NextResponse.json({
         success: false,
         error: 'Transcription is still processing. Please try again later.'
-      }, { status: 400 });
+      }, { status: 202 }); // Changed from 400 to 202 to indicate "Accepted but processing"
     }
     
     const transcriptionText = transcription.transcription_text;
@@ -286,7 +286,7 @@ export async function POST(req: Request) {
       return NextResponse.json({
         success: false,
         error: 'Transcription is still processing. Please try again later.'
-      }, { status: 400 });
+      }, { status: 202 }); // Changed from 400 to 202 to indicate "Accepted but processing"
     }
     
     // Extract the text to analyze
